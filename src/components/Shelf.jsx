@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { isPdfFile } from '../lib/importer'
 import { goRead } from '../hooks/useHashRoute'
 
-export default function Shelf({ books, onImport, onDelete }) {
+export default function Shelf({ books, onImport, onDelete, onOpenBackup }) {
   const [over, setOver] = useState(false)
   const inputRef = useRef(null)
 
@@ -15,6 +15,9 @@ export default function Shelf({ books, onImport, onDelete }) {
     <div className="app">
       <div className="topbar">
         <h1>我的书架</h1>
+        <button className="btn" onClick={onOpenBackup}>
+          备份
+        </button>
         <button className="btn btn-primary" onClick={() => inputRef.current?.click()}>
           导入 PDF
         </button>
@@ -46,7 +49,7 @@ export default function Shelf({ books, onImport, onDelete }) {
       >
         <div className={`dropzone${over ? ' over' : ''}`}>
           <strong>把 PDF 拖进来</strong>
-          或点右上角导入 · 文件只存在这台设备上
+          或点右上角导入 · 文件只存在这台设备上，记得定期导出备份
         </div>
 
         {books.length === 0 ? (
@@ -58,7 +61,10 @@ export default function Shelf({ books, onImport, onDelete }) {
           <div className="grid">
             {books.map((b) => {
               const p = b.progress
-              const pct = p && b.pageCount ? Math.round((p.page / b.pageCount) * 100) : 0
+              const pct =
+                p && b.pageCount && !b.missingFile
+                  ? Math.round((p.page / b.pageCount) * 100)
+                  : 0
               return (
                 <div className="card" key={b.id}>
                   <button className="cover" onClick={() => goRead(b.id)}>
@@ -67,6 +73,7 @@ export default function Shelf({ books, onImport, onDelete }) {
                     ) : (
                       <span className="cover-empty">{b.title.slice(0, 1)}</span>
                     )}
+                    {b.missingFile && <span className="cover-flag">需重新导入</span>}
                   </button>
                   <div className="card-body">
                     <button
@@ -77,7 +84,13 @@ export default function Shelf({ books, onImport, onDelete }) {
                       {b.title}
                     </button>
                     <div className="card-meta">
-                      <span>{pct > 0 ? `已读 ${pct}%` : `${b.pageCount} 页`}</span>
+                      <span>
+                        {b.missingFile
+                          ? '笔记已保留'
+                          : pct > 0
+                            ? `已读 ${pct}%`
+                            : `${b.pageCount} 页`}
+                      </span>
                       <button className="card-del" onClick={() => onDelete(b)}>
                         删除
                       </button>

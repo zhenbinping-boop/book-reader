@@ -2,6 +2,7 @@ import Dexie from 'dexie'
 
 export const db = new Dexie('book-reader')
 
+// 每个 version 的定义都要保留（Dexie 靠它们推导升级路径），不要删旧版本
 db.version(1).stores({
   // 书籍元数据。cover 是可直接用于 img src 的 dataURL
   books: '++id, format, addedAt, lastReadAt',
@@ -25,21 +26,55 @@ db.version(2).stores({
   textIndex: 'bookId',
 })
 
+// v3：books 加 fileHash（内容指纹）索引。
+// 备份恢复后书 id 会变，只有靠指纹才能把笔记/进度重新对回书上；
+// 顺带让「重新导入同一个 PDF」能接回原有笔记，而不是变成两本书。
+db.version(3).stores({
+  books: '++id, format, addedAt, lastReadAt, fileHash',
+  blobs: 'id',
+  progress: 'bookId',
+  bookmarks: '++id, bookId, page',
+  highlights: '++id, bookId, page, createdAt',
+  textIndex: 'bookId',
+})
+
 /** 高亮可选颜色。顺序即 UI 中色块的排列顺序 */
 export const HIGHLIGHT_COLORS = ['yellow', 'green', 'blue', 'pink']
 
-export async function putBook({ title, format, pageCount, cover, blob }) {
+export async function putBook({
+  title,
+  format,
+  pageCount,
+  cover,
+  blob,
+  fileHash = null,
+  fileName = null,
+}) {
   const now = Date.now()
   const id = await db.books.add({
     title,
     format,
     pageCount: pageCount ?? 0,
     cover: cover ?? null,
+    fileHash,
+    fileName,
+    // 原文件丢失（如从备份恢复到一台还没重新导入文件的设备）时置 true
+    missingFile: false,
     addedAt: now,
     lastReadAt: now,
   })
   await db.blobs.put({ id, blob })
-  await db.progress.put({ bookId: id, page: 1, scaleMode: 'fit', zoom: 1, mode: 'scroll', updatedAt: now })
+  // started:false 表示「还没真正读过」的占位进度。
+  // 备份恢复时要靠它区分：别让刚导入书的 page=1 顶掉备份里真正读到的位置。
+  await db.progress.put({
+    bookId: id,
+    page: 1,
+    scaleMode: 'fit',
+    zoom: 1,
+    mode: 'scroll',
+    started: false,
+    updatedAt: now,
+  })
   return id
 }
 
@@ -61,7 +96,14 @@ export async function listBooks() {
 
 export async function saveProgress(bookId, patch) {
   const prev = (await db.progress.get(Number(bookId))) ?? {}
-  await db.progress.put({ ...prev, ...patch, bookId: Number(bookId), updatedAt: Date.now() })
+  // started:true —— 从这里写进来的都是真实阅读位置
+  await db.progress.put({
+    ...prev,
+    ...patch,
+    started: true,
+    bookId: Number(bookId),
+    updatedAt: Date.now(),
+  })
   await db.books.update(Number(bookId), { lastReadAt: Date.now() })
 }
 
@@ -81,13 +123,27 @@ export async function deleteBook(id) {
   )
 }
 
+/* ---------- 指纹相关 ---------- */
+
+export async function findBookByHash(hash) {
+  if (!hash) return null
+  return (await db.books.where('fileHash').equals(hash).first()) ?? null
+}
+
+/** 给一本书补上原文件（重新导入时把文件接回已有记录） */
+export async function attachBlob(bookId, blob, patch = {}) {
+  const n = Number(bookId)
+  await db.blobs.put({ id: n, blob })
+  await db.books.update(n, { missingFile: false, ...patch })
+}
+
 /* ---------- 高亮 ---------- */
 
 /**
  * 一条高亮的位置用「文本项下标 + 项内字符偏移」表示：
  *   { page, start: { item, offset }, end: { item, offset } }
  * 同一 PDF 文件解析出的文本项顺序是稳定的，所以本地持久化够用。
- * text 冗余存一份，供笔记列表展示与将来导出。
+ * text 冗余存一份，供笔记列表展示与导出。
  */
 export async function listHighlights(bookId) {
   return db.highlights.where('bookId').equals(Number(bookId)).toArray()

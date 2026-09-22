@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>backup / persistence test</title>
+    <style>
+      body { font: 12px/1.5 monospace; padding: 12px; margin: 0; }
+      #log { position: fixed; inset: 0 0 auto 0; background: #fff; z-index: 99999; padding: 10px; max-height: 100vh; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <div id="log"></div>
+    <script>
+      window.__errs = []
+      window.addEventListener('error', (e) => {
+        window.__errs.push('WINDOW ERROR: ' + (e.message || e.error) + ' @ ' + (e.filename || '') + ':' + (e.lineno || ''))
+      })
+      window.addEventListener('unhandledrejection', (e) =>
+        window.__errs.push('REJECTION: ' + (e.reason && e.reason.message ? e.reason.message : e.reason))
+      )
+    </script>
+    <script type="module">
+      const ENDPOINT = 'http://127.0.0.1:5178/log'
+      const IN_TARGET = location.pathname.endsWith('dev-backup.html')
+      const log = (m) => {
+        document.getElementById('log').innerHTML += `<div>${m}</div>`
+        if (IN_TARGET) { try { fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true }) } catch {} }
+      }
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+      const dump = () => window.__errs.forEach((e) => log(e))
+      let failed = 0
+      const assertEq = (label, got, want) => {
+        const pass = got === want
+        if (!pass) failed++
+        log(
+          `${pass ? 'ok  ' : 'BAD '}${label}: ${JSON.stringify(got)}` +
+            (pass ? '' : ' (want ' + JSON.stringify(want) + ')')
+        )
+      }
+      const ok = (label, cond) => {
+        if (!cond) failed++
+        log(`${cond ? 'ok  ' : 'BAD '}${label}`)
+      }
+
+      // 高亮位置用 dev-text.html 实测验证过的坐标：sample.pdf 第 1 页
+      // 文本项 2 的第 13–30 个字符，正好是 "generated locally"。
+      const HL_PAGE = 0
+      const HL_START = { item: 2, offset: 13 }
+      const HL_END = { item: 2, offset: 30 }
+      const HL_TEXT = 'generated locally'
+
+      try {
+        log('boot')
+
+        const dbmod = await import('/src/db.js')
+        const bk = await import('/src/lib/backup.js')
+        const { importPdf } = await import('/src/lib/importer.js')
+        const { db } = dbmod
+
+        // ---- 0. 干净起点 ----
+        await db.delete()
+        await db.open()
+        log('db cleared, tables=' + db.tables.map((t) => t.name).join(','))
+
+        const res = await fetch('/@fs/D:/book-reader/samples/sample.pdf')
+        const blob = await res.blob()
+        const makeFile = () => new File([blob], 'sample.pdf', { type: 'application/pdf' })
+
+        /* ---------- 1. 导入 + 指纹 ---------- */
+        const r1 = await importPdf(makeFile())
+        assertEq('import#1 status', r1.status, 'added')
+        const id = r1.id
+        const book1 = await db.books.get(id)
+        ok('books.fileHash 已写入', typeof book1.fileHash === 'string' && book1.fileHash.length > 10)
+        log('fileHash = ' + book1.fileHash)
+        assertEq('fileName 已记录', book1.fileName, 'sample.pdf')
+        assertEq('导入时的进度是未读占位', (await db.progress.get(id)).started, false)
+
+        /* ---------- 2. 指纹可复现 / 重复导入被拦 ---------- */
+        assertEq('指纹可复现', await bk.fileFingerprint(makeFile()), book1.fileHash)
+        const r2 = await importPdf(makeFile())
+        assertEq('import#2 status（应被拦下）', r2.status, 'duplicate')
+        assertEq('import#2 指向同一本', r2.id, id)
+        assertEq('书架没有多出一本', (await db.books.toArray()).length, 1)
+
+        /* ---------- 3. 造一条高亮 + 一个真实进度 ---------- */
+        await dbmod.addHighlight({
+          bookId: id,
+          page: HL_PAGE,
+          start: HL_START,
+          end: HL_END,
+          text: HL_TEXT,
+          color: 'green',
+        })
+        await dbmod.saveProgress(id, { page: 3 })
+        assertEq('已存高亮', (await dbmod.listHighlights(id)).length, 1)
+        assertEq('真实进度会置 started=true', (await db.progress.get(id)).started, true)
+
+        /* ---------- 4. 导出备份 ---------- */
+        const data = await bk.buildBackup({ includeFiles: false })
+        assertEq('备份 schemaVersion', data.schemaVersion, 1)
+        assertEq('备份 books', data.books.length, 1)
+        assertEq('备份 highlights', data.highlights.length, 1)
+        assertEq('备份 progress', data.progress.length, 1)
+        ok('备份里带了 fileHash', !!data.books[0].fileHash)
+        assertEq('不含原文件时 files 为空', data.files.length, 0)
+
+        /* ---------- 5. 备份文件能被重新解析 ---------- */
+        const roundTrip = bk.parseBackup(JSON.stringify(data))
+        assertEq('parseBackup 往返一致', roundTrip.books.length, 1)
+        let rejected = false
+        try { bk.parseBackup('{"app":"other"}') } catch { rejected = true }
+        ok('非本应用的备份被拒绝', rejected)
+
+        /* ---------- 6. 笔记 Markdown ---------- */
+        const md = bk.notesToMarkdown(book1, await dbmod.listHighlights(id))
+        ok('markdown 含正文', md.includes(HL_TEXT))
+        ok('markdown 含页码标题', md.includes('## 第 1 页'))
+        ok('markdown 含书名', md.includes(book1.title))
+
+        /* ---------- 7. 清库后恢复：id 变了，笔记必须按指纹接回 ---------- */
+        await db.delete()
+        await db.open()
+        // 先塞一本占位书把自增 id 顶走，保证重新导入拿到的是不同 id ——
+        // 这样「笔记对上了」才真的证明是按内容指纹合并，而不是靠 id 恰好撞对
+        await db.books.add({ title: '占位', format: 'pdf', pageCount: 0, addedAt: 1, lastReadAt: 1 })
+        const r3 = await importPdf(makeFile())
+        const newId = r3.id
+        ok('重新导入拿到了不同 id（排除按 id 撞对）', newId !== id)
+        const rep = await bk.restoreBackup(data)
+        log('restore report: ' + JSON.stringify(rep))
+        assertEq('并入已有书', rep.mergedBooks, 1)
+        assertEq('新增书目', rep.addedBooks, 0)
+        assertEq('恢复高亮', rep.highlights, 1)
+        assertEq('恢复进度', rep.progress, 1)
+        const marks = await dbmod.listHighlights(newId)
+        assertEq('高亮挂在新 id 上', marks.length, 1)
+        assertEq('高亮文本', marks[0].text, HL_TEXT)
+        assertEq('高亮颜色保住', marks[0].color, 'green')
+        assertEq('高亮页码', marks[0].page, HL_PAGE)
+        assertEq('进度恢复到第 3 页', (await db.progress.get(newId)).page, 3)
+
+        /* ---------- 8. 重复恢复是幂等的 ---------- */
+        const rep2 = await bk.restoreBackup(data)
+        assertEq('第二次恢复跳过重复高亮', rep2.skippedHighlights, 1)
+        assertEq('高亮没有翻倍', (await dbmod.listHighlights(newId)).length, 1)
+
+        /* ---------- 9. 缺文件路径：只恢复备份，不导入原文件 ---------- */
+        await db.delete()
+        await db.open()
+        const rep3 = await bk.restoreBackup(data)
+        assertEq('恢复出书目', rep3.addedBooks, 1)
+        const orphan = (await db.books.toArray())[0]
+        assertEq('标记为缺原文件', orphan.missingFile, true)
+        assertEq('笔记仍保留', (await dbmod.listHighlights(orphan.id)).length, 1)
+        const r4 = await importPdf(makeFile())
+        assertEq('重新导入同一个 PDF → 接回', r4.status, 'linked')
+        assertEq('接回到同一条记录', r4.id, orphan.id)
+        assertEq('missingFile 已清除', (await db.books.get(orphan.id)).missingFile, false)
+
+        /* ---------- 10. 渲染层：笔记要画出来，退出时进度必须落盘 ---------- */
+        const rootEl = document.createElement('div')
+        rootEl.id = 'root'
+        document.body.appendChild(rootEl)
+        await import('/src/main.jsx')
+        await sleep(800)
+
+        const bid = (await db.books.toArray())[0].id
+        await dbmod.saveProgress(bid, { page: 1 })
+        window.location.hash = `#/read/${bid}`
+        await sleep(6000)
+        log('reader mounted: slots=' + document.querySelectorAll('.page-slot').length)
+        assertEq('进入时停在第 1 页', (document.querySelector('.scrub-num') || {}).textContent.trim(), '1 / 6')
+        const rectsAt1 = document.querySelectorAll('.mark-rect').length
+        ok(`第 1 页画出高亮矩形（${rectsAt1} 个）`, rectsAt1 >= 1)
+
+        const view = document.querySelector('.reader-view')
+        view.scrollTop = view.scrollHeight * 0.7
+        view.dispatchEvent(new Event('scroll'))
+        await sleep(250)
+        const shown = (document.querySelector('.scrub-num') || {}).textContent || ''
+        const pageNow = Number(shown.split('/')[0].trim())
+        log('滚动后显示 = ' + shown.trim())
+        ok('滚到了更靠后的页', pageNow > 1)
+
+        // 关键回归点：立刻离开，远早于 600ms 防抖窗口。
+        // 修复之前，pending 的写入会被 unmount 的 clearTimeout 吃掉，进度停在 1
+        window.location.hash = '#/'
+        await sleep(500)
+        const saved = (await db.progress.get(bid)).page
+        assertEq('离开阅读器时进度已落盘（防抖不丢）', saved, pageNow)
+
+        // 再进去一次，读回来的必须是离开时的位置，而不是被重置
+        window.location.hash = `#/read/${bid}`
+        await sleep(4500)
+        assertEq(
+          '再次进入回到离开时的位置',
+          (document.querySelector('.scrub-num') || {}).textContent.trim(),
+          `${saved} / 6`
+        )
+        assertEq('笔记仍在库中', (await dbmod.listHighlights(bid)).length, 1)
+
+        // 回到第 1 页，确认笔记是「画出来」的，不只是存在库里
+        await dbmod.saveProgress(bid, { page: 1 })
+        window.location.hash = '#/'
+        await sleep(300)
+        window.location.hash = `#/read/${bid}`
+        await sleep(5000)
+        const rectsAgain = document.querySelectorAll('.mark-rect').length
+        ok(`重新进入后笔记照常渲染（${rectsAgain} 个矩形）`, rectsAgain >= 1)
+        dump()
+      } catch (e) {
+        failed++
+        log('THROWN: ' + (e && e.message ? e.message : e))
+        log('stack: ' + (e && e.stack ? String(e.stack).split('\n').slice(0, 3).join(' | ') : ''))
+      }
+      if (window.__errs.length) failed++
+      log(failed ? 'FAIL: ' + failed + ' 条断言/错误未通过' : 'ALL DONE')
+    </script>
+  </body>
+</html>

@@ -43,8 +43,9 @@
         const res = await fetch('/@fs/D:/book-reader/samples/sample.pdf')
         const blob = await res.blob()
         const { importPdf } = await import('/src/lib/importer.js')
-        const id = await importPdf(new File([blob], 'sample.pdf', { type: 'application/pdf' }))
-        log('importPdf -> id ' + id)
+        const imported = await importPdf(new File([blob], 'sample.pdf', { type: 'application/pdf' }))
+        const id = imported.id
+        log('importPdf -> id ' + id + ' (' + imported.status + ')')
 
         const rootEl = document.createElement('div')
         rootEl.id = 'root'

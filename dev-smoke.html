@@ -49,8 +49,9 @@
         log('fetched ' + blob.size + ' bytes')
 
         const { importPdf } = await import('/src/lib/importer.js')
-        const id = await importPdf(new File([blob], 'sample.pdf', { type: 'application/pdf' }))
-        log('importPdf -> id ' + id)
+        const imported = await importPdf(new File([blob], 'sample.pdf', { type: 'application/pdf' }))
+        const id = imported.id
+        log('importPdf -> id ' + id + ' (' + imported.status + ')')
 
         const { db } = await import('/src/db.js')
         const book = await db.books.get(id)

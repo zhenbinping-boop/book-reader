@@ -13,6 +13,7 @@ import {
 } from '../db'
 import { loadPrefs, savePrefs, resolveTheme, nextTheme, THEME_LABELS } from '../lib/prefs'
 import { readSelection } from '../lib/selection'
+import { exportNotes } from '../lib/backup'
 import PdfPage from './PdfPage'
 import SidePanel from './SidePanel'
 import SelectionPopover from './SelectionPopover'
@@ -49,6 +50,7 @@ export default function PdfReader({ bookId, title, onBack }) {
   const [query, setQuery] = useState('')
   const [textPages, setTextPages] = useState(null)
   const [indexProgress, setIndexProgress] = useState(null)
+  const [toast, setToast] = useState('')
 
   const viewRef = useRef(null)
   const slotsRef = useRef([])
@@ -61,6 +63,10 @@ export default function PdfReader({ bookId, title, onBack }) {
   const jumpRef = useRef(null)
   const didJump = useRef(false)
   const saveTimer = useRef(0)
+  // 最新但还没落盘的进度。离开阅读器 / 页面转后台时靠它兜底补写
+  const pendingRef = useRef(null)
+  // 首次恢复跳转是否已完成。完成前不许写回，否则会拿初始的 page=1 覆盖已存进度
+  const restoredRef = useRef(false)
   const touchRef = useRef(null)
   const offsetsRef = useRef([])
 
@@ -177,6 +183,8 @@ export default function PdfReader({ bookId, title, onBack }) {
     if (phase !== 'ready' || didJump.current) return
     if (!offsets.length || !viewBox.w) return
     didJump.current = true
+    // 标记恢复完成，之后的 current 变化才允许写回进度
+    restoredRef.current = true
     requestAnimationFrame(() => goTo(jumpRef.current ?? 1))
   }, [phase, offsets, viewBox.w, goTo])
 
@@ -263,14 +271,45 @@ export default function PdfReader({ bookId, title, onBack }) {
   }, [mode])
 
   // ---- 进度写回 ----
+  // 防抖 600ms：连续滚动时不会每帧都写一次 IndexedDB。
   useEffect(() => {
     if (phase !== 'ready') return
+    // 恢复跳转完成前不写回。此刻 current 还是初始值 1，
+    // 抢在恢复前落盘就会把「上次读到第几页」覆盖成第 1 页。
+    if (!restoredRef.current) return
+    pendingRef.current = { page: current, mode, zoom }
     clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(() => {
-      saveProgress(bookId, { page: current, mode, zoom })
+      const patch = pendingRef.current
+      pendingRef.current = null
+      if (patch) saveProgress(bookId, patch)
     }, 600)
-    return () => clearTimeout(saveTimer.current)
   }, [current, mode, zoom, phase, bookId])
+
+  // 兜底写出：离开阅读器、或页面被切到后台/关闭时立刻补写一次。
+  //
+  // 这个 effect 只依赖 bookId，所以它的 cleanup 只在真正卸载时执行 ——
+  // 不会像上面的防抖那样，被每次翻页引起的依赖变化提前 clearTimeout 掉
+  // （那正是「滚动后立刻返回，位置没记住」的原因）。
+  useEffect(() => {
+    const flush = () => {
+      const patch = pendingRef.current
+      if (!patch) return
+      pendingRef.current = null
+      saveProgress(bookId, patch)
+    }
+    const onHide = () => {
+      // 手机上切走 App 时，pagehide 不一定触发，visibilitychange 更可靠
+      if (document.visibilityState === 'hidden') flush()
+    }
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', onHide)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', onHide)
+      flush()
+    }
+  }, [bookId])
 
   // ---- 自动隐藏控件 ----
   useEffect(() => {
@@ -465,6 +504,25 @@ export default function PdfReader({ bookId, title, onBack }) {
 
   const onJumpHit = useCallback((hit) => goTo(hit.page + 1), [goTo])
 
+  /* ---------------- 笔记导出 ---------------- */
+
+  const onExportNotes = useCallback(() => {
+    try {
+      const r = exportNotes({ title }, highlights)
+      setToast(
+        r.count ? `已导出 ${r.count} 条笔记：${r.filename}` : '这本书还没有笔记，已导出空文件'
+      )
+    } catch (err) {
+      setToast(`导出失败：${err?.message || '未知错误'}`)
+    }
+  }, [title, highlights])
+
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(''), 5000)
+    return () => clearTimeout(t)
+  }, [toast])
+
   /* ---------------- 渲染 ---------------- */
 
   // 每页的高亮切成稳定的数组，避免每次渲染都让子组件的标注层重算
@@ -650,10 +708,13 @@ export default function PdfReader({ bookId, title, onBack }) {
           ensureIndex={ensureIndex}
           indexProgress={indexProgress}
           onJumpHit={onJumpHit}
+          onExportNotes={onExportNotes}
           query={query}
           setQuery={setQuery}
         />
       )}
+
+      {toast && <div className="toast">{toast}</div>}
     </div>
   )
 }

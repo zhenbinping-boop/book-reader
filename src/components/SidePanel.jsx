@@ -21,6 +21,7 @@ export default function SidePanel({
   ensureIndex,
   indexProgress,
   onJumpHit,
+  onExportNotes,
   query,
   setQuery,
 }) {
@@ -136,30 +137,45 @@ export default function SidePanel({
         )}
 
         {tab === 'notes' && (
-          <div className="panel-body">
-            {sortedNotes.length === 0 ? (
-              <div className="outline-empty">还没有笔记。在正文里按住划选一段文字即可高亮。</div>
-            ) : (
-              sortedNotes.map((h) => (
-                <div key={h.id} className="note-item">
-                  <button className="note-main" onClick={() => onJumpPage(h.page + 1)}>
-                    <span className="note-pg">p{h.page + 1}</span>
-                    <span className="note-text" data-color={h.color}>
-                      {h.text}
-                    </span>
-                  </button>
-                  <button
-                    className="note-del"
-                    title="删除这条高亮"
-                    aria-label="删除这条高亮"
-                    onClick={() => onMarkDelete(h)}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
+          <>
+            <div className="notes-bar">
+              <span className="notes-count">
+                {sortedNotes.length ? `共 ${sortedNotes.length} 条` : '暂无笔记'}
+              </span>
+              <button
+                className="btn btn-sm"
+                onClick={onExportNotes}
+                disabled={!onExportNotes}
+                title="导出为 Markdown 文件，可按页分享或存档"
+              >
+                导出 Markdown
+              </button>
+            </div>
+            <div className="panel-body">
+              {sortedNotes.length === 0 ? (
+                <div className="outline-empty">还没有笔记。在正文里按住划选一段文字即可高亮。</div>
+              ) : (
+                sortedNotes.map((h) => (
+                  <div key={h.id} className="note-item">
+                    <button className="note-main" onClick={() => onJumpPage(h.page + 1)}>
+                      <span className="note-pg">p{h.page + 1}</span>
+                      <span className="note-text" data-color={h.color}>
+                        {h.text}
+                      </span>
+                    </button>
+                    <button
+                      className="note-del"
+                      title="删除这条高亮"
+                      aria-label="删除这条高亮"
+                      onClick={() => onMarkDelete(h)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </>
         )}
 
         {tab === 'search' && (
