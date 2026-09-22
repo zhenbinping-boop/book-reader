@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>设计基线 token 验证</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="host"></div>
+    <script>
+      /* 把结果实时回传到 tools/browser_smoke.py 起的本地端口 */
+      const ENDPOINT = 'http://127.0.0.1:5178/log'
+
+      // 只有目标页面才上报。Chrome 在恢复会话等场景下会把这同一份 HTML
+      // 丢进 about:srcdoc 上下文再执行一次（且不解析 /src/ 路径），会污染日志。
+      const IN_TARGET = location.pathname.endsWith('dev-tokens.html')
+
+      function log(m) {
+        if (!IN_TARGET) return
+        try {
+          fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true }).catch(() => {})
+        } catch {}
+      }
+      function fail(e) {
+        log('FAIL: ' + (e && e.stack ? e.stack : e))
+      }
+
+      const THEMES = ['paper', 'sepia', 'night', 'oled']
+
+      // DESIGN.md §3.3 的期望值 —— 改基线时必须同步改这里
+      const EXPECT = {
+        paper: { bg: '#fdfbf7', surface: '#eae6de', text: '#1a1a1a', muted: '#6b6b6b', accent: '#8a5a2b' },
+        sepia: { bg: '#f4ecd8', surface: '#e3d8be', text: '#3b3327', muted: '#6b6b6b', accent: '#8a5a2b' },
+        night: { bg: '#14161a', surface: '#0e1013', text: '#b9b5ae', muted: '#9a9489', accent: '#c9a37a' },
+        oled: { bg: '#000000', surface: '#0a0a0a', text: '#a8a8a8', muted: '#8a857a', accent: '#c9a37a' },
+      }
+
+      const readVar = (el, name) => getComputedStyle(el).getPropertyValue(name).trim()
+
+      window.addEventListener('error', (e) => fail(e.message || e.error))
+
+      ;(async () => {
+        try {
+          log('=== 1) 样式表已加载 ===')
+          log('URL=' + location.href)
+          log('styleSheets=' + document.styleSheets.length)
+
+          const rootEl = document.documentElement
+          const root = getComputedStyle(rootEl)
+          log('--ui-bg      = ' + readVar(rootEl, '--ui-bg'))
+          log('--ui-text    = ' + readVar(rootEl, '--ui-text'))
+          log('--ui-accent  = ' + readVar(rootEl, '--ui-accent'))
+          log('--tap-min    = ' + readVar(rootEl, '--tap-min'))
+          log('--radius-md  = ' + readVar(rootEl, '--radius-md'))
+          log('--dur-2      = ' + readVar(rootEl, '--dur-2'))
+          log('--reader-size= ' + readVar(rootEl, '--reader-size'))
+          log('--reader-measure = ' + readVar(rootEl, '--reader-measure'))
+
+          log('=== 2) 兼容别名是否指向新 token ===')
+          const aliasOk = readVar(rootEl, '--bg') === readVar(rootEl, '--ui-bg')
+          log('--bg === --ui-bg : ' + aliasOk)
+          if (!aliasOk) throw new Error('别名映射失效')
+          const aliasMuted = readVar(rootEl, '--muted') === readVar(rootEl, '--ui-text-muted')
+          log('--muted === --ui-text-muted : ' + aliasMuted)
+          if (!aliasMuted) throw new Error('muted 别名映射失效')
+
+          log('=== 3) 四套阅读主题逐个核对 ===')
+          const el = document.createElement('div')
+          el.className = 'reader'
+          el.style.height = '120px'
+          document.getElementById('host').appendChild(el)
+
+          let bad = 0
+          for (const t of THEMES) {
+            el.setAttribute('data-reader-theme', t)
+            const exp = EXPECT[t]
+            const row = {
+              bg: readVar(el, '--reader-bg'),
+              surface: readVar(el, '--reader-surface'),
+              text: readVar(el, '--reader-text'),
+              muted: readVar(el, '--reader-text-muted'),
+              accent: readVar(el, '--reader-accent'),
+            }
+            const diff = Object.keys(exp).filter((k) => row[k] !== exp[k])
+            const painted = getComputedStyle(el).backgroundColor
+            log(
+              `[${t}] vars-ok=${diff.length === 0} painted=${painted}` +
+                (diff.length ? '  MISMATCH: ' + diff.map((k) => `${k} 期望${exp[k]} 实际${row[k]}`).join('; ') : '')
+            )
+            if (diff.length) bad++
+            if (!painted || painted === 'rgba(0, 0, 0, 0)') {
+              log(`[${t}] 背景色未实际渲染`)
+              bad++
+            }
+          }
+          if (bad) throw new Error(`${bad} 处主题值不符`)
+
+          log('=== 4) 未设 data-reader-theme 时应回落到系统默认 ===')
+          el.removeAttribute('data-reader-theme')
+          const fallback = readVar(el, '--reader-bg')
+          log('fallback --reader-bg = ' + fallback + ' (light 期望 #fdfbf7 / dark 期望 #14161a)')
+
+          log('=== 5) 主题切换按钮的色块色值 ===')
+          for (const t of THEMES) {
+            const dot = document.createElement('span')
+            dot.className = 'theme-dot'
+            dot.dataset.theme = t
+            document.body.appendChild(dot)
+            const c = getComputedStyle(dot).backgroundColor
+            const size = getComputedStyle(dot).width
+            log(`dot[${t}] bg=${c} size=${size}`)
+            if (c === 'rgba(0, 0, 0, 0)') throw new Error(`色块 ${t} 没有背景色`)
+          }
+
+          log('ALL DONE')
+        } catch (e) {
+          fail(e)
+        }
+      })()
+    </script>
+  </body>
+</html>

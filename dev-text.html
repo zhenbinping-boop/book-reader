@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>text layer / highlight / search test</title>
+    <style>
+      body { font: 12px/1.5 monospace; padding: 12px; margin: 0; }
+      #log { position: fixed; inset: 0 0 auto 0; background: #fff; z-index: 99999; padding: 10px; max-height: 100vh; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <div id="log"></div>
+    <script>
+      window.__errs = []
+      window.addEventListener('error', (e) => {
+        window.__errs.push('WINDOW ERROR: ' + (e.message || e.error) + ' @ ' + (e.filename || '') + ':' + (e.lineno || ''))
+      })
+      window.addEventListener('unhandledrejection', (e) =>
+        window.__errs.push('REJECTION: ' + (e.reason && e.reason.message ? e.reason.message : e.reason))
+      )
+    </script>
+    <script type="module">
+      const ENDPOINT = 'http://127.0.0.1:5178/log'
+      const IN_TARGET = location.pathname.endsWith('dev-text.html')
+      const log = (m) => {
+        document.getElementById('log').innerHTML += `<div>${m}</div>`
+        if (IN_TARGET) { try { fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true }) } catch {} }
+      }
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+      const dump = () => window.__errs.forEach((e) => log(e))
+      const assertEq = (label, got, want) =>
+        log(`${got === want ? 'ok  ' : 'BAD '}${label}: ${got}${got === want ? '' : ' (want ' + want + ')'}`)
+
+      try {
+        log('boot')
+
+        // ---- 0. TextLayer 类是否真的从 v6 主包里导出（这是整个方案的前提）----
+        const { pdfjsLib } = await import('/src/pdf/pdfWorker.js')
+        assertEq('pdfjsLib.TextLayer is fn', typeof pdfjsLib.TextLayer, 'function')
+        log('pdfjs version: ' + pdfjsLib.version)
+
+        // ---- 1. 导入并挂载 ----
+        const res = await fetch('/@fs/D:/book-reader/samples/sample.pdf')
+        const blob = await res.blob()
+        const { importPdf } = await import('/src/lib/importer.js')
+        const id = await importPdf(new File([blob], 'sample.pdf', { type: 'application/pdf' }))
+        log('importPdf -> id ' + id)
+
+        const rootEl = document.createElement('div')
+        rootEl.id = 'root'
+        document.body.appendChild(rootEl)
+        await import('/src/main.jsx')
+        await sleep(1200)
+
+        window.location.hash = `#/read/${id}`
+        await sleep(6000)
+        log('reader mounted: slots=' + document.querySelectorAll('.page-slot').length)
+        dump()
+
+        // ---- 2. 文本层是否真的渲染出来了 ----
+        await sleep(1500)
+        const layers = document.querySelectorAll('.textLayer')
+        const spans = document.querySelectorAll('.textLayer span[data-idx]')
+        log('textLayer containers=' + layers.length + ' spans=' + spans.length)
+        const page0 = document.querySelector('.textLayer[data-page="0"]')
+        const spansIn0 = page0 ? page0.querySelectorAll('span[data-idx]').length : -1
+        const joined = page0 ? page0.textContent : ''
+        log('page0 spans=' + spansIn0)
+        log('page0 text="' + joined.slice(0, 90) + '"')
+        log('page0 has "generated locally"=' + joined.includes('generated locally'))
+
+        // 布局是否正常：字号不能为 0，span 必须落在页面里
+        const sp = page0?.querySelector('span[data-idx]')
+        const cs = getComputedStyle(sp)
+        const sr = sp.getBoundingClientRect()
+        const slot = document.querySelector('.page-slot').getBoundingClientRect()
+        log('textLayer span fontSize=' + cs.fontSize + ' transform=' + cs.transform)
+        log('textLayer span rect=' + [Math.round(sr.left), Math.round(sr.top), Math.round(sr.width), Math.round(sr.height)].join(','))
+        log('textLayer within page=' + (sr.left >= slot.left - 2 && sr.right <= slot.right + 2 && sr.top >= slot.top - 2 && sr.bottom <= slot.bottom + 4))
+        log('textLayer total-scale-factor=' + (page0?.style.getPropertyValue('--total-scale-factor') || 'unset'))
+
+        // 分层是否有利于划词：命中测试必须落在文本 span 上，而不是被高亮层/占位层挡住。
+        // 先藏掉日志遮罩 —— 它 fixed 铺满视口，会把命中测试全部吃掉。
+        document.getElementById('log').style.display = 'none'
+        await sleep(120)
+        const hit = document.elementFromPoint(sr.left + 6, sr.top + sr.height / 2)
+        log('elementFromPoint over text -> ' + (hit ? hit.tagName + '.' + (hit.className || '-') + ' idx=' + hit.dataset?.idx : 'null'))
+        assertEq('hit is text span', !!hit && hit.tagName === 'SPAN' && hit.dataset.idx !== undefined, true)
+        assertEq('span user-select', hit ? getComputedStyle(hit).userSelect : '?', 'text')
+        dump()
+
+        // ---- 3. 划词 → 气泡 → 高亮 ----
+        const targetSpan = [...page0.querySelectorAll('span[data-idx]')].find((s) => s.textContent.includes('generated'))
+        log('found target span=' + !!targetSpan + ' text="' + (targetSpan?.textContent || '') + '"')
+        const start = targetSpan.textContent.indexOf('generated')
+        const range = document.createRange()
+        range.setStart(targetSpan.firstChild, start)
+        range.setEnd(targetSpan.firstChild, start + 'generated locally'.length)
+        const sel = window.getSelection()
+        sel.removeAllRanges()
+        sel.addRange(range)
+        log('selection="' + sel.toString() + '"')
+
+        document.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+        document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+        await sleep(400)
+        const pop = document.querySelector('.popover')
+        log('popover shown=' + !!pop + ' swatches=' + document.querySelectorAll('.popover .sw').length)
+        dump()
+
+        document.querySelector('.popover .sw[data-color="yellow"]')?.click()
+        await sleep(700)
+        assertEq('mark rects on page0', document.querySelectorAll('.mark-rect[data-kind="hl"]').length > 0, true)
+        const mr = document.querySelector('.mark-rect[data-kind="hl"]')
+        log('mark rect geometry=' + [mr?.style.left, mr?.style.top, mr?.style.width, mr?.style.height].join(' | '))
+
+        const { db } = await import('/src/db.js')
+        const saved = await db.highlights.toArray()
+        assertEq('db highlights', saved.length, 1)
+        log('db row: page=' + saved[0]?.page + ' color=' + saved[0]?.color + ' text="' + saved[0]?.text + '"')
+        log('db position: ' + JSON.stringify(saved[0]?.start) + ' -> ' + JSON.stringify(saved[0]?.end))
+        dump()
+
+        // ---- 4. 侧栏：目录 / 笔记 ----
+        const tabBtn = [...document.querySelectorAll('.reader-top button')].find((b) => b.textContent === '面板')
+        tabBtn?.click()
+        await sleep(700)
+        log('panel: open=' + !!document.querySelector('.drawer') + ' tabs=' + document.querySelectorAll('.drawer .tab').length)
+        log('panel: outlineItems=' + document.querySelectorAll('.outline-item').length)
+
+        const noteTab = [...document.querySelectorAll('.drawer .tab')].find((b) => b.textContent.startsWith('笔记'))
+        noteTab?.click()
+        await sleep(400)
+        assertEq('note items', document.querySelectorAll('.note-item').length, 1)
+        log('note text="' + (document.querySelector('.note-text')?.textContent || '') + '"')
+        dump()
+
+        // ---- 5. 全文搜索 ----
+        const searchTab = [...document.querySelectorAll('.drawer .tab')].find((b) => b.textContent.startsWith('搜索'))
+        searchTab?.click()
+        await sleep(400)
+        const input = document.querySelector('.search-input')
+        log('search input=' + !!input)
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+        setter.call(input, 'IndexedDB')
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        await sleep(3500)
+        assertEq('search hits', document.querySelectorAll('.hit-item').length > 0, true)
+        log('search hit#1="' + (document.querySelector('.hit-item')?.textContent || '') + '"')
+        dump()
+
+        const idx = await db.textIndex.get(Number(id))
+        log('textIndex persisted: pages=' + (idx?.pages?.length ?? 'none') + ' p6 has IndexedDB=' + !!idx?.pages?.[5]?.includes('IndexedDB'))
+        log('textIndex page2 text="' + (idx?.pages?.[1] || '').slice(0, 60) + '"')
+
+        // ---- 6. 跳到命中页并标出 ----
+        document.querySelector('.hit-item')?.click()
+        await sleep(2500)
+        log('after jump counter="' + (document.querySelector('.scrub-num')?.textContent || '') + '"')
+        assertEq('search hit rects', document.querySelectorAll('.mark-rect[data-kind="hit"]').length > 0, true)
+        dump()
+
+        // ---- 7. 校验索引与页面文本一致（去空白后应完全相同）----
+        const p6 = document.querySelector('.textLayer[data-page="5"]')
+        if (p6 && idx?.pages?.[5]) {
+          const strip = (s) => s.replace(/\s+/g, '')
+          assertEq('index text == dom text (p6)', strip(p6.textContent) === strip(idx.pages[5]), true)
+        } else {
+          log('BAD p6 layer missing: layer=' + !!p6 + ' idx=' + !!idx?.pages?.[5])
+        }
+
+        log('ALL DONE')
+      } catch (e) {
+        log('FAIL: ' + (e && e.message ? e.message : e))
+        window.__errs.forEach((x) => log(x))
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+node_modules
+dist
+dist-*
+dist-ssr
+dev-dist
+.vite
+*.local
+.DS_Store
+.tmp
+.vite-dev.log
+# pdf.js 的中文 CMap 与标准字体，由 tools/copy_pdf_assets.py 从 node_modules 复制生成
+public/cmaps
+public/standard_fonts
+# agent 工作记忆目录（含本机环境细节），不进仓库
+.workbuddy/

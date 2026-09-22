@@ -1,0 +1,133 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /Outlines 4 0 R /PageMode /UseOutlines /PageLayout /SinglePage >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R 6 0 R 7 0 R 8 0 R 9 0 R 10 0 R] /Count 6 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Outlines /First 17 0 R /Last 21 0 R /Count 5 >>
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 11 0 R >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 12 0 R >>
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 13 0 R >>
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 14 0 R >>
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 15 0 R >>
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 16 0 R >>
+endobj
+11 0 obj
+<< /Length 339 >>
+stream
+BT /F1 22 Tf 64 770 Td (Easy PDF Sample) Tj ET
+0.55 0.45 0.35 RG 2 w 64 752 m 531 752 l S
+BT /F1 12 Tf 64 712 Td (This file is generated locally to smoke-test the reader.) Tj ET
+BT /F1 12 Tf 64 688 Td (It has 6 pages and a 3-level outline.) Tj ET
+BT /F1 12 Tf 64 640 Td (Try: scroll, zoom, outline jump, page mode, progress restore.) Tj ET
+endstream
+endobj
+12 0 obj
+<< /Length 340 >>
+stream
+BT /F1 22 Tf 64 770 Td (Chapter 1  Introduction) Tj ET
+0.55 0.45 0.35 RG 2 w 64 752 m 531 752 l S
+BT /F1 12 Tf 64 712 Td (PDF rendering is handled by pdf.js inside the browser.) Tj ET
+BT /F1 12 Tf 64 688 Td (Pages outside the viewport are not rendered at all,) Tj ET
+BT /F1 12 Tf 64 664 Td (which keeps memory flat on mobile devices.) Tj ET
+endstream
+endobj
+13 0 obj
+<< /Length 263 >>
+stream
+BT /F1 22 Tf 64 770 Td (Chapter 1  continued) Tj ET
+0.55 0.45 0.35 RG 2 w 64 752 m 531 752 l S
+BT /F1 12 Tf 64 712 Td (Each page slot reserves its exact height before paint,) Tj ET
+BT /F1 12 Tf 64 688 Td (so the scrollbar never jumps while pages stream in.) Tj ET
+endstream
+endobj
+14 0 obj
+<< /Length 247 >>
+stream
+BT /F1 22 Tf 64 770 Td (Chapter 2  Layout) Tj ET
+0.55 0.45 0.35 RG 2 w 64 752 m 531 752 l S
+BT /F1 12 Tf 64 712 Td (Continuous mode is best for long documents.) Tj ET
+BT /F1 12 Tf 64 688 Td (Single page mode is better for slides and comics.) Tj ET
+endstream
+endobj
+15 0 obj
+<< /Length 240 >>
+stream
+BT /F1 22 Tf 64 770 Td (Chapter 2  continued) Tj ET
+0.55 0.45 0.35 RG 2 w 64 752 m 531 752 l S
+BT /F1 12 Tf 64 712 Td (Zoom multiplies the fit-to-width scale.) Tj ET
+BT /F1 12 Tf 64 688 Td (Tap the percentage button to reset to 100%.) Tj ET
+endstream
+endobj
+16 0 obj
+<< /Length 323 >>
+stream
+BT /F1 22 Tf 64 770 Td (Chapter 3  Storage) Tj ET
+0.55 0.45 0.35 RG 2 w 64 752 m 531 752 l S
+BT /F1 12 Tf 64 712 Td (Files live in IndexedDB as blobs, on this device only.) Tj ET
+BT /F1 12 Tf 64 688 Td (Nothing is uploaded anywhere.) Tj ET
+BT /F1 12 Tf 64 664 Td (Progress and bookmarks are saved on every page turn.) Tj ET
+endstream
+endobj
+17 0 obj
+<< /Title (Chapter 1  Introduction) /Parent 4 0 R /Dest [5 0 R /XYZ 0 842 null] /First 18 0 R /Last 18 0 R /Count 1 /Next 19 0 R >>
+endobj
+18 0 obj
+<< /Title (Chapter 1  continued) /Parent 17 0 R /Dest [6 0 R /XYZ 0 842 null] >>
+endobj
+19 0 obj
+<< /Title (Chapter 2  Layout) /Parent 4 0 R /Dest [7 0 R /XYZ 0 842 null] /First 20 0 R /Last 20 0 R /Count 1 /Prev 17 0 R /Next 21 0 R >>
+endobj
+20 0 obj
+<< /Title (Chapter 2  continued) /Parent 19 0 R /Dest [8 0 R /XYZ 0 842 null] >>
+endobj
+21 0 obj
+<< /Title (Chapter 3  Storage) /Parent 4 0 R /Dest [9 0 R /XYZ 0 842 null] /Prev 19 0 R >>
+endobj
+xref
+0 22
+0000000000 65535 f 
+0000000015 00000 n 
+0000000127 00000 n 
+0000000215 00000 n 
+0000000312 00000 n 
+0000000385 00000 n 
+0000000512 00000 n 
+0000000639 00000 n 
+0000000766 00000 n 
+0000000893 00000 n 
+0000001020 00000 n 
+0000001148 00000 n 
+0000001539 00000 n 
+0000001931 00000 n 
+0000002246 00000 n 
+0000002545 00000 n 
+0000002837 00000 n 
+0000003212 00000 n 
+0000003360 00000 n 
+0000003457 00000 n 
+0000003612 00000 n 
+0000003709 00000 n 
+trailer
+<< /Size 22 /Root 1 0 R >>
+startxref
+3816
+%%EOF

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>smoke test</title>
+    <style>
+      body { font: 13px/1.6 monospace; padding: 16px; }
+      #log {
+        position: fixed; left: 0; top: 0; right: 0;
+        background: #fff; z-index: 9999; padding: 12px;
+        max-height: 100vh; overflow: auto; border-bottom: 2px solid #333;
+      }
+      canvas { border: 1px solid #999; max-width: 200px; }
+    </style>
+  </head>
+  <body>
+    <div id="log"></div>
+    <script>
+      // 尽早挂错误监听，才能捕获模块加载期的问题
+      window.__errs = []
+      window.addEventListener('error', (e) => {
+        const m = 'WINDOW ERROR: ' + (e.message || e.error) + ' @ ' + (e.filename || '') + ':' + (e.lineno || '')
+        window.__errs.push(m)
+      })
+      window.addEventListener('unhandledrejection', (e) =>
+        window.__errs.push('REJECTION: ' + (e.reason && e.reason.message ? e.reason.message : e.reason))
+      )
+    </script>
+    <script type="module">
+      const ENDPOINT = 'http://127.0.0.1:5178/log'
+      // 只有目标页面才上报：Chrome 恢复会话时会把同一份 HTML 丢进
+      // about:srcdoc 上下文重复执行，那会污染测试日志
+      const IN_TARGET = location.pathname.endsWith('dev-smoke.html')
+      const log = (m) => {
+        document.getElementById('log').innerHTML += `<div>${m}</div>`
+        if (!IN_TARGET) return
+        try {
+          fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true })
+        } catch {}
+      }
+      const dumpErrors = () => window.__errs.forEach((e) => log(e))
+
+      try {
+        log('boot')
+
+        // ---- 1. 数据链路 ----
+        const res = await fetch('/@fs/D:/book-reader/samples/sample.pdf')
+        const blob = await res.blob()
+        log('fetched ' + blob.size + ' bytes')
+
+        const { importPdf } = await import('/src/lib/importer.js')
+        const id = await importPdf(new File([blob], 'sample.pdf', { type: 'application/pdf' }))
+        log('importPdf -> id ' + id)
+
+        const { db } = await import('/src/db.js')
+        const book = await db.books.get(id)
+        log(`book "${book.title}" pages=${book.pageCount} cover=${book.cover ? book.cover.length + ' chars' : 'none'}`)
+
+        // ---- 2. 挂载真实应用（不用 iframe，便于捕获错误）----
+        const rootEl = document.createElement('div')
+        rootEl.id = 'root'
+        document.body.appendChild(rootEl)
+        await import('/src/main.jsx')
+        await new Promise((r) => setTimeout(r, 2500))
+
+        log('mounted. rootChildren=' + rootEl.children.length + ' totalNodes=' + document.querySelectorAll('*').length)
+        log('shelf: topbar=' + !!document.querySelector('.topbar') + ' dropzone=' + !!document.querySelector('.dropzone'))
+        log('shelf: cards=' + document.querySelectorAll('.card').length + ' coverImg=' + !!document.querySelector('.cover img'))
+        log('shelf: firstTitle="' + (document.querySelector('.card-title')?.textContent || '') + '"')
+        log('shelf: meta="' + (document.querySelector('.card-meta span')?.textContent || '') + '"')
+        dumpErrors()
+
+        // ---- 3. 阅读器 ----
+        window.location.hash = `#/read/${id}`
+        await new Promise((r) => setTimeout(r, 5000))
+        log('reader: view=' + !!document.querySelector('.reader-view'))
+        log('reader: slots=' + document.querySelectorAll('.page-slot').length + ' canvases=' + document.querySelectorAll('.page-slot canvas').length)
+        log('reader: title="' + (document.querySelector('.reader-title')?.textContent || '') + '"')
+        log('reader: counter="' + (document.querySelector('.scrub-num')?.textContent || '') + '"')
+        log('reader: slotStyle=' + (document.querySelector('.page-slot')?.getAttribute('style') || ''))
+        dumpErrors()
+
+        // ---- 4. 阅读主题切换 ----
+        const readerEl = document.querySelector('.reader')
+        const themeBtn = document.querySelector('.theme-btn')
+        log('theme: button=' + !!themeBtn + ' initial=' + readerEl?.getAttribute('data-reader-theme'))
+        log('theme: bg=' + getComputedStyle(readerEl).backgroundColor)
+        themeBtn?.click()
+        await new Promise((r) => setTimeout(r, 400))
+        log('theme: afterClick=' + readerEl?.getAttribute('data-reader-theme'))
+        log('theme: bgAfter=' + getComputedStyle(readerEl).backgroundColor)
+        log('theme: persisted=' + localStorage.getItem('book-reader:prefs'))
+        log('theme: toolbarBtns=' + document.querySelectorAll('.reader-top button').length)
+        dumpErrors()
+
+        // ---- 5. 侧栏（目录 / 笔记 / 搜索 三标签）----
+        const btn = [...document.querySelectorAll('.reader-top button')].find((b) => b.textContent === '面板')
+        log('panel button found=' + !!btn)
+        btn?.click()
+        await new Promise((r) => setTimeout(r, 800))
+        log('panel: tabs=' + document.querySelectorAll('.drawer .tab').length)
+        log('panel: outlineItems=' + document.querySelectorAll('.outline-item').length)
+        log('panel: first="' + (document.querySelector('.outline-item')?.textContent || '') + '"')
+        dumpErrors()
+
+        log('ALL DONE')
+      } catch (e) {
+        log('FAIL: ' + (e && e.message ? e.message : e))
+        window.__errs.forEach((x) => log(x))
+      }
+    </script>
+  </body>
+</html>
