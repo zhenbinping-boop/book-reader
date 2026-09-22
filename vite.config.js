@@ -25,17 +25,19 @@ export default defineConfig(async () => {
         short_name: '阅读器',
         description: '导入 PDF 到手机，离线阅读',
         lang: 'zh-CN',
-        start_url: '/',
-        scope: '/',
+        // 全部用相对路径：manifest 在 /book-reader/manifest.webmanifest 时，
+        // '.' 会解析成 /book-reader/，这样部署在子路径或根路径都成立。
+        start_url: '.',
+        scope: '.',
         display: 'standalone',
         orientation: 'portrait',
         background_color: '#f7f5f0',
         theme_color: '#f7f5f0',
         icons: [
-          { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
-          { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+          { src: 'icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: 'icon-512.png', sizes: '512x512', type: 'image/png' },
           {
-            src: '/icon-512.png',
+            src: 'icon-512.png',
             sizes: '512x512',
             type: 'image/png',
             purpose: 'maskable',
@@ -44,7 +46,7 @@ export default defineConfig(async () => {
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,png,svg,woff2}'],
-        navigateFallback: '/index.html',
+        navigateFallback: 'index.html',
         cleanupOutdatedCaches: true,
         // pdf.js 的 CMap / worker 会超过 workbox 默认 2MB 上限
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
