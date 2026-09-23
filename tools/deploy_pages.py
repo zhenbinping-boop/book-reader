@@ -5,13 +5,19 @@
 所以改为只访问 api.github.com 的 Git Data API，与 push_via_api.py 同一套路子。
 
 用法：
-    GITHUB_TOKEN=xxx python tools/deploy_pages.py dist-gh --branch gh-pages
-    GITHUB_TOKEN=xxx python tools/deploy_pages.py dist-gh --branch gh-pages --message "deploy: v0.1.0"
+    GITHUB_TOKEN=xxx python tools/deploy_pages.py dist-gh2 --branch gh-pages
+    GITHUB_TOKEN=xxx python tools/deploy_pages.py dist-gh2 --branch gh-pages --message "deploy: v0.1.0"
+
+增量：以分支现有 tree 为 base，逐个文件比对 git blob sha（sha1("blob <len>\\0"+内容)）。
+内容一致的直接复用已有 blob，不发上传请求 —— 静态站里 cmaps/ 占 180 多个文件且常年不变，
+重跑时只需要传真正变动的那几个（通常是 index.html / assets/*.js / *.css / sw.js）。
+对代理抖动也友好：中断后重跑不会再把 196 个文件重来一遍。
 
 token 需要该仓库的 Contents 读写权限（fine-grained）。
 """
 import argparse
 import base64
+import hashlib
 import json
 import os
 import sys
@@ -65,6 +71,11 @@ def api(method, path, payload=None, ok=(200, 201), timeout=90, retries=4):
     raise RuntimeError('%s %s 重试 %d 次仍失败: %r' % (method, path, retries, last))
 
 
+def blob_sha(raw):
+    """git 对象 id：sha1('blob <len>\\0' + 内容)，与 GitHub 算的一致。"""
+    return hashlib.sha1(b'blob %d\0' % len(raw) + raw).hexdigest()
+
+
 def collect(root, ignore=()):
     """返回 [(相对路径, 绝对路径)]，路径统一用 / 分隔。"""
     out = []
@@ -80,7 +91,7 @@ def collect(root, ignore=()):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('dir', help='要部署的本地目录（如 dist-gh）')
+    ap.add_argument('dir', help='要部署的本地目录（如 dist-gh2）')
     ap.add_argument('--branch', default='gh-pages')
     ap.add_argument('--message', default='deploy: 发布静态站')
     args = ap.parse_args()
@@ -95,15 +106,18 @@ def main():
     files = collect(root)
     print('files to deploy:', len(files))
 
-    # 分支已存在则以其 tree 为 base，保留未被覆盖的文件；不存在就是首个提交
+    # 分支已存在则以其 tree 为 base，复用内容未变的 blob（增量部署）
     base_tree = None
     parents = []
+    remote_blobs = {}
     try:
         ref = api('GET', '/repos/%s/%s/git/ref/heads/%s' % (OWNER, REPO, args.branch))
         sha = ref['object']['sha']
         parents = [sha]
         base_tree = api('GET', '/repos/%s/%s/git/commits/%s' % (OWNER, REPO, sha))['tree']['sha']
-        print('已有分支 %s，base tree %s' % (args.branch, base_tree[:8]))
+        tree = api('GET', '/repos/%s/%s/git/trees/%s?recursive=1' % (OWNER, REPO, base_tree))
+        remote_blobs = {e['path']: e['sha'] for e in tree.get('tree', []) if e['type'] == 'blob'}
+        print('已有分支 %s，base tree %s（%d 个 blob）' % (args.branch, base_tree[:8], len(remote_blobs)))
     except RuntimeError as e:
         if '404' not in str(e) and '409' not in str(e):
             raise
@@ -111,29 +125,52 @@ def main():
 
     entries = []
     total = 0
+    uploaded = 0
+    reused = 0
     for i, (rel, abs_p) in enumerate(files, 1):
         raw = open(abs_p, 'rb').read()
         total += len(raw)
-        blob = api('POST', '/repos/%s/%s/git/blobs' % (OWNER, REPO), {
-            'content': base64.b64encode(raw).decode('ascii'),
-            'encoding': 'base64',
-        })
-        entries.append({'path': rel, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
-        if i % 20 == 0 or i == len(files):
-            print('  [%3d/%d] ... %s' % (i, len(files), rel))
+        sha = blob_sha(raw)
+        if remote_blobs.get(rel) == sha:
+            entries.append({'path': rel, 'mode': '100644', 'type': 'blob', 'sha': sha})
+            reused += 1
+        else:
+            blob = api('POST', '/repos/%s/%s/git/blobs' % (OWNER, REPO), {
+                'content': base64.b64encode(raw).decode('ascii'),
+                'encoding': 'base64',
+            })
+            entries.append({'path': rel, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
+            uploaded += 1
+        if i % 40 == 0 or i == len(files):
+            print('  [%3d/%d] 新传 %d / 复用 %d' % (i, len(files), uploaded, reused))
 
     # Pages 默认会走 Jekyll，加个 .nojekyll 跳过处理后处理（也避免下划线开头的文件被吃掉）
-    blob = api('POST', '/repos/%s/%s/git/blobs' % (OWNER, REPO), {
-        'content': base64.b64encode(b'').decode('ascii'),
-        'encoding': 'base64',
-    })
-    entries.append({'path': '.nojekyll', 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
+    if remote_blobs.get('.nojekyll') == blob_sha(b''):
+        entries.append({'path': '.nojekyll', 'mode': '100644', 'type': 'blob',
+                        'sha': remote_blobs['.nojekyll']})
+    else:
+        blob = api('POST', '/repos/%s/%s/git/blobs' % (OWNER, REPO), {
+            'content': base64.b64encode(b'').decode('ascii'),
+            'encoding': 'base64',
+        })
+        entries.append({'path': '.nojekyll', 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
+        uploaded += 1
+
+    print('blob 结果：新传 %d 个，复用 %d 个（共 %.1f MB）' % (uploaded, reused, total / 1024 / 1024))
+
+    # 内容与远端完全一致就不用造新提交了
+    if base_tree and parents:
+        same = all(remote_blobs.get(e['path']) == e['sha'] for e in entries)
+        if same and len(remote_blobs) == len(entries):
+            print('远端内容与本地一致，无需提交。')
+            print('\n完成 -> https://github.com/%s/%s/tree/%s' % (OWNER, REPO, args.branch))
+            return
 
     payload = {'tree': entries}
     if base_tree:
         payload['base_tree'] = base_tree
     tree = api('POST', '/repos/%s/%s/git/trees' % (OWNER, REPO), payload)
-    print('tree:', tree['sha'], '（%.1f MB）' % (total / 1024 / 1024))
+    print('tree:', tree['sha'])
 
     commit_payload = {'message': args.message, 'tree': tree['sha']}
     if parents:
