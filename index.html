@@ -9,6 +9,8 @@
     <!-- 与 styles.css 的 --ui-bg 严格对齐，否则 PWA 启动时会闪色 -->
     <meta name="theme-color" content="#f7f5f0" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#131519" media="(prefers-color-scheme: dark)" />
+    <!-- apple- 前缀那条只对 iOS 生效，Android/Chrome 认这条（缺了会在控制台报弃用提示） -->
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="阅读器" />
