@@ -751,21 +751,41 @@ export default function TxtReader({ bookId, title, onBack }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [nextPage, prevPage, onBack, drawer, appearance, menu, backToPrev])
 
-  // 点屏幕：左 1/3 上一页、右 1/3 下一页、中间唤出 / 收起菜单
+  /**
+   * 点屏幕。
+   *
+   * 工具栏 3.5 秒后会自动收起，所以「点一下空白把工具栏唤回来」是最高频的动作，
+   * 它绝不能被翻页抢走 —— 旧实现不分状态地按左/中/右分区，工具栏收起时点两侧就是翻页，
+   * 翻完页工具栏又自己收了，人于是**永远调不出工具栏**。
+   *
+   *  · 工具栏**收起**时 → 点哪儿都只负责唤出，不翻页；
+   *  · 工具栏**展开**时 → 滚动模式下点哪儿都只负责收起（滚动模式里「翻页」= 滚一屏，
+   *    被一次误点触发很难受）；翻页模式下中间收起、左右各 1/4 翻页。
+   *
+   * 翻页模式下两侧留窄一点（1/4）是为了把「中间空白」这个最顺手的落点让给工具栏。
+   */
   const onStageClick = useCallback(
     (e) => {
       if (popoverRef.current) return
       const sel = window.getSelection()
       if (sel && !sel.isCollapsed) return
+      if (!ui) {
+        setUi(true)
+        return
+      }
+      if (flowRef.current === 'scroll') {
+        setUi(false)
+        return
+      }
       const vp = vpRef.current
       if (!vp) return
       const r = vp.getBoundingClientRect()
       const rel = (e.clientX - r.left) / Math.max(1, r.width)
-      if (rel < 0.32) prevPage()
-      else if (rel > 0.68) nextPage()
-      else setUi((v) => !v)
+      if (rel < 0.25) prevPage()
+      else if (rel > 0.75) nextPage()
+      else setUi(false)
     },
-    [nextPage, prevPage]
+    [ui, nextPage, prevPage]
   )
 
   /* ---------------- 划词高亮 ---------------- */
@@ -1018,12 +1038,32 @@ export default function TxtReader({ bookId, title, onBack }) {
             const t = e.touches[0]
             touchRef.current = { x: t.clientX, y: t.clientY }
           }}
+          onTouchMove={(e) => {
+            // 滚动模式：滚到底（到顶）之后**继续**滑 → 换节。
+            // 「只在当前节内滚动」需要一个自然的出口，否则读完本节就卡住了。
+            // 判据取「已经在边界上 + 手指还往边界外推」，所以正常浏览永远不会误触发。
+            if (flowRef.current !== 'scroll') return
+            const start = touchRef.current
+            const vp = vpRef.current
+            if (!start || !vp || e.touches.length > 1) return
+            const max = Math.max(0, vp.scrollHeight - vp.clientHeight)
+            const dy = e.touches[0].clientY - start.y
+            if (vp.scrollTop >= max - 2 && dy < -80) {
+              touchRef.current = null // 一次滑动只换一节，免得连跳
+              nextPage()
+            } else if (vp.scrollTop <= 2 && dy > 80) {
+              touchRef.current = null
+              prevPage()
+            }
+          }}
           onTouchEnd={(e) => {
             const start = touchRef.current
             touchRef.current = null
             if (!start) return
             // 刚做完双指缩放：`changedTouches[0]` 的位移可能远超 50px，别误判成翻页
             if (shouldIgnoreSwipe()) return
+            // 滚动模式下上下滑就是浏览本身，横向轻滑不该被当成「滚一屏」翻页
+            if (flowRef.current === 'scroll') return
             const t = e.changedTouches[0]
             const dx = t.clientX - start.x
             const dy = t.clientY - start.y

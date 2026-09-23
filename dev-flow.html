@@ -364,6 +364,128 @@
         await sleep(120)
         host.innerHTML = ''
 
+        /* ================= 5. 点击：唤出工具栏 ≠ 翻页 ================= */
+        // 工具栏 3.5 秒后会自动收起，所以「点空白把工具栏唤回来」是最高频的动作。
+        // 旧实现不看状态、直接按左/中/右分区：收起状态下点两侧就是翻页，翻完工具栏又自己收了
+        // —— 于是人永远调不出工具栏。这一段把新语义锁死。
+        const stage = () => host.querySelector('.txt-stage')
+        const uiOff = () => !!host.querySelector('.reader-top.hidden')
+        const sig = () => chapLabel() + '#' + (pageLabel()?.page ?? '?')
+        const clickAt = (relX, relY = 0.5) => {
+          const v = vp()
+          const r = v.getBoundingClientRect()
+          stage().dispatchEvent(
+            new MouseEvent('click', {
+              bubbles: true,
+              clientX: r.left + r.width * relX,
+              clientY: r.top + r.height * relY,
+            })
+          )
+        }
+        const shutUi = async () => {
+          if (!uiOff()) {
+            clickAt(0.5)
+            await until(() => uiOff(), 3000)
+          }
+          return uiOff()
+        }
+        const near = (a, b, tol = 4) => Math.abs(a - b) <= tol
+
+        await db.delete()
+        await db.open()
+        const rt2 = await importFile(await asFile('sample-utf8.txt', TXT_URL, 'text/plain'))
+        savePrefs({ readerFlow: 'page' })
+        const makeTxt2 = () => {
+          const r = createRoot(host)
+          r.render(React.createElement(TxtReader, { bookId: rt2.id, title: 'sample', onBack: () => {} }))
+          return r
+        }
+
+        root = makeTxt2()
+        ok('翻页模式挂起来了', !!(await until(() => vp() && !cols().classList.contains('scroll-flow'), 9000)))
+        await until(() => pageLabel(), 6000)
+        ok('前置：工具栏已收起', await shutUi())
+
+        const s0 = sig()
+        clickAt(0.08) // 收起状态下点左边缘
+        await sleep(320)
+        ok('★ 收起时点左边缘 → 只唤出工具栏', !uiOff())
+        assertEq('   …位置没动', sig(), s0)
+        ok('前置：再收起', await shutUi())
+        clickAt(0.92) // 收起状态下点右边缘
+        await sleep(320)
+        ok('★ 收起时点右边缘 → 只唤出工具栏', !uiOff())
+        assertEq('   …位置没动', sig(), s0)
+
+        // 展开状态：中间收起（不翻页）；两侧翻页（保留桌面鼠标的习惯）
+        const s1 = sig()
+        clickAt(0.5)
+        await until(() => uiOff(), 3000)
+        ok('展开时点中间 → 收起工具栏', uiOff())
+        assertEq('   …没顺手翻页', sig(), s1)
+        clickAt(0.5) // 点回来（收起时点中间 = 唤出）
+        await until(() => !uiOff(), 3000)
+        const s2 = sig()
+        clickAt(0.92)
+        const s3 = await until(() => (sig() !== s2 ? sig() : null), 5000)
+        ok(`展开时点右边缘 → 翻页（${s2} → ${s3}）`, !!s3)
+
+        root.unmount()
+        await sleep(120)
+        host.innerHTML = ''
+
+        /* ---------- 滚动模式：点空白只开关工具栏，绝不滚动 ---------- */
+        savePrefs({ readerFlow: 'scroll' })
+        root = makeTxt2()
+        ok('滚动模式挂起来了', !!(await until(() => vp() && vp().classList.contains('scroll-flow'), 9000)))
+        const n2 = await until(() => (segs().length > 4 ? segs().length : null), 6000)
+        ok(`这一章有 ${n2} 段`, !!n2)
+        setRange(host.querySelector('.reader-bottom input[type=range]'), Math.max(1, Math.floor(n2 / 2)) + 1)
+        await sleep(700)
+        const st0 = vp().scrollTop
+        ok(`已滚到章中（scrollTop=${st0}）`, st0 > 0)
+
+        ok('前置：工具栏已收起', await shutUi())
+        const cs0 = chapLabel()
+        clickAt(0.92)
+        await sleep(400)
+        ok('★ 滚动模式：收起时点空白 → 唤出工具栏', !uiOff())
+        ok(`   …没有偷偷滚一屏（${st0} → ${vp().scrollTop}）`, near(vp().scrollTop, st0))
+        assertEq('   …也没换章', chapLabel(), cs0)
+        clickAt(0.5)
+        await until(() => uiOff(), 3000)
+        ok('★ 滚动模式：展开时点空白 → 收起工具栏', uiOff())
+        ok(`   …同样没滚（${st0} → ${vp().scrollTop}）`, near(vp().scrollTop, st0))
+
+        root.unmount()
+        await sleep(120)
+        host.innerHTML = ''
+
+        /* ---------- EPUB：同一条语义 ---------- */
+        await db.delete()
+        await db.open()
+        const re2 = await importFile(
+          await asFile('sample.epub', '/@fs/D:/book-reader/samples/sample.epub', 'application/epub+zip')
+        )
+        savePrefs({ readerFlow: 'page' })
+        const makeEpub2 = () => {
+          const r = createRoot(host)
+          r.render(React.createElement(EpubReader, { bookId: re2.id, title: '样例电子书', onBack: () => {} }))
+          return r
+        }
+        root = makeEpub2()
+        ok('EPUB 翻页模式挂起来了', !!(await until(() => vp() && !cols().classList.contains('scroll-flow'), 14000)))
+        ok('前置：工具栏已收起', await shutUi())
+        const es0 = sig()
+        clickAt(0.9)
+        await sleep(400)
+        ok('★ EPUB：收起时点空白 → 唤出工具栏', !uiOff())
+        assertEq('   …没翻页也没换节', sig(), es0)
+
+        root.unmount()
+        await sleep(120)
+        host.innerHTML = ''
+
         dump()
         log(failed ? 'RESULT: FAIL (' + failed + ' 条断言未过)' : 'RESULT: PASS')
         log('ALL DONE')
