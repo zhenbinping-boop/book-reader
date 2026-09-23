@@ -7,6 +7,10 @@
 用法：
     GITHUB_TOKEN=xxx python tools/deploy_pages.py dist-gh2 --branch gh-pages
     GITHUB_TOKEN=xxx python tools/deploy_pages.py dist-gh2 --branch gh-pages --message "deploy: v0.1.0"
+    GITHUB_TOKEN=xxx python tools/deploy_pages.py dist-gh2 --branch gh-pages --clean
+
+默认以分支现有 tree 为 base（不清掉旧文件），静态站换了构建后建议加 `--clean` ——
+`assets/index-<hash>.js` 每次改名，不清的话每发一版就在 Pages 上多留一份旧 bundle。
 
 增量：以分支现有 tree 为 base，逐个文件比对 git blob sha（sha1("blob <len>\\0"+内容)）。
 内容一致的直接复用已有 blob，不发上传请求 —— 静态站里 cmaps/ 占 180 多个文件且常年不变，
@@ -94,6 +98,9 @@ def main():
     ap.add_argument('dir', help='要部署的本地目录（如 dist-gh2）')
     ap.add_argument('--branch', default='gh-pages')
     ap.add_argument('--message', default='deploy: 发布静态站')
+    ap.add_argument('--clean', action='store_true',
+                    help='不继承分支原有文件，只保留本次目录里的内容。'
+                         '静态站的 assets/*.js 带内容哈希，不清的话旧构建会一直堆着。')
     args = ap.parse_args()
 
     root = os.path.abspath(args.dir)
@@ -158,6 +165,14 @@ def main():
 
     print('blob 结果：新传 %d 个，复用 %d 个（共 %.1f MB）' % (uploaded, reused, total / 1024 / 1024))
 
+    # --clean：不把旧 tree 当 base，于是远端只留本次产物的文件。
+    # 复用判断仍走 remote_blobs（那是单独读的分支现状），所以增量上传不受影响。
+    payload_base = None if args.clean else base_tree
+    if args.clean and base_tree:
+        stale = sorted(set(remote_blobs) - {e['path'] for e in entries})
+        print('--clean：不继承旧 tree，将移除 %d 个本地已不存在的文件%s'
+              % (len(stale), ('（如 ' + '、'.join(stale[:3]) + '）') if stale else ''))
+
     # 内容与远端完全一致就不用造新提交了
     if base_tree and parents:
         same = all(remote_blobs.get(e['path']) == e['sha'] for e in entries)
@@ -167,8 +182,8 @@ def main():
             return
 
     payload = {'tree': entries}
-    if base_tree:
-        payload['base_tree'] = base_tree
+    if payload_base:
+        payload['base_tree'] = payload_base
     tree = api('POST', '/repos/%s/%s/git/trees' % (OWNER, REPO), payload)
     print('tree:', tree['sha'])
 

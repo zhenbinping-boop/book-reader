@@ -12,7 +12,12 @@ api.github.com 在本机沙箱代理下可达，而 github.com:443 的 CONNECT �
     python tools/push_via_api.py <token>
 
 token 需要对该仓库有 Contents 读写权限（fine-grained 即可）。
+
+提交信息：默认沿用 `git log -1`，但**很容易写错** —— 本地 HEAD 往往还停在上一版
+（本工作流只 `git add` 不 commit），于是新提交顶着旧提交的信息上去。
+需要准确描述时请显式传 `-m`。
 """
+import argparse
 import base64
 import json
 import os
@@ -28,9 +33,16 @@ BRANCH = 'main'
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API = 'https://api.github.com'
 
-TOKEN = os.environ.get('GITHUB_TOKEN') or (sys.argv[1] if len(sys.argv) > 1 else None)
+_ap = argparse.ArgumentParser(description='走 Git Data API 推送本地文件到远端分支')
+_ap.add_argument('token_pos', nargs='?', help='token（也可用 GITHUB_TOKEN 环境变量）')
+_ap.add_argument('-m', '--message', default=None, help='提交信息；不给则沿用 git log -1')
+_ap.add_argument('--branch', default=BRANCH, help='目标分支，默认 main')
+ARGS = _ap.parse_args()
+
+TOKEN = os.environ.get('GITHUB_TOKEN') or ARGS.token_pos
 if not TOKEN:
     sys.exit('缺少 token：设置环境变量 GITHUB_TOKEN，或作为第一个参数传入')
+BRANCH = ARGS.branch
 
 
 def api(method, path, payload=None, ok=(200, 201), timeout=90, retries=4):
@@ -151,8 +163,14 @@ def main():
     print('tree:', tree['sha'])
 
     # 3) tree -> commit
-    msg = subprocess.run(['git', 'log', '-1', '--pretty=%B'], cwd=REPO_DIR,
-                         capture_output=True, check=True).stdout.decode('utf-8', 'replace').strip()
+    if ARGS.message:
+        msg = ARGS.message
+    else:
+        msg = subprocess.run(['git', 'log', '-1', '--pretty=%B'], cwd=REPO_DIR,
+                             capture_output=True, check=True).stdout.decode('utf-8', 'replace').strip()
+        if msg:
+            print('!! 提交信息沿用本地 HEAD（%s）—— 若与本次改动不符，请用 -m 显式指定'
+                  % msg.splitlines()[0][:50])
     commit = api('POST', '/repos/%s/%s/git/commits' % (OWNER, REPO), {
         'message': msg or 'chore: initial commit',
         'tree': tree['sha'],
