@@ -154,6 +154,11 @@
         const moved = await until(() => (host.querySelector('.scrub-num')?.textContent !== pageBefore ? true : null), 6000)
         ok(`右方向键翻到了下一页（${pageBefore} → ${host.querySelector('.scrub-num')?.textContent}）`, !!moved)
 
+        // 等锚点停稳再走人。翻页是 smooth 滚动，`.scrub-num` 一变就点「返回」的话，
+        // 那一刻 scrollLeft 还在半路、落盘的章内偏移还是**上一页**的 —— 断言会随机红
+        // （症状：charOffset 记成 0）。见 REFERENCE.md「进度持久化」那条。
+        await sleep(450)
+
         const backBtn = [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '返回')
         ok('顶栏有「返回」', !!backBtn)
         backBtn.click()

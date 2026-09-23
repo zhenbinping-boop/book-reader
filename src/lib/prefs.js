@@ -50,6 +50,14 @@ export function snapTo(ladder, v) {
 /** 字号吸附。双指缩放给的是连续值，必须收回来 */
 export const snapReaderSize = (size) => snapTo(READER_SIZES, size)
 
+/**
+ * 正文版式（DESIGN.md §15）：
+ *   'page'   —— 一次一屏（CSS 多栏分页），左右 / 上下翻页
+ *   'scroll' —— 本节内竖向连续滚动，一屏一屏往下走，滚到底再进下一节
+ * 只对**流式格式**（TXT / EPUB）有意义。PDF 的版式由 progress.mode 管，不走这里。
+ */
+export const READER_FLOWS = ['page', 'scroll']
+
 /** 按方向走一档。返回 null 表示已经在两端 */
 export function stepReaderSize(size, dir) {
   const i = READER_SIZES.indexOf(snapReaderSize(size))
@@ -74,6 +82,11 @@ export const DEFAULT_PREFS = {
    * 不该每进一本书重新点一次。申请成败由浏览器决定，失败静默降级。
    */
   readerKeepAwake: false,
+  /**
+   * 流式格式（TXT / EPUB）的正文版式。默认仍是翻页 —— 老用户的手感不该被改掉，
+   * 想滚动的人点一次顶栏那个按钮，之后就一直是滚动。
+   */
+  readerFlow: 'page',
 }
 
 const DEFAULTS = DEFAULT_PREFS
@@ -102,6 +115,8 @@ export function loadPrefs() {
     readerLeading: snapTo(READER_LEADINGS, p.readerLeading),
     readerParaGap: snapTo(READER_PARA_GAPS, p.readerParaGap),
     readerPad: snapTo(READER_PADS, p.readerPad),
+    // 版式是枚举不是数值，只能白名单校验 —— 手改过 localStorage 也不该让阅读器失帧
+    readerFlow: READER_FLOWS.includes(p.readerFlow) ? p.readerFlow : DEFAULTS.readerFlow,
   }
 }
 

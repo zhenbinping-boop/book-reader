@@ -533,15 +533,16 @@
           assertEq('（同时确认那一下确实移动了 100px）', Math.abs(120 - 220), 100)
         }
 
-        /* ================= 6. 显示面板：常亮 / 沉浸 / 外观 ================= */
+        /* ================= 6. 显示面板：常亮 / 沉浸 / 外观 / 翻页方式 ================= */
         const prevLockCalls = lockCalls
         btn('⋯').click()
         ok('⋯ 打开了显示面板', await until(() => document.querySelector('.display-menu'), 3000))
         const rows = [...document.querySelectorAll('.display-menu .display-row')]
-        assertEq('面板里有 3 行', rows.length, 3)
+        assertEq('面板里有 4 行', rows.length, 4)
         assertEq('第一行是常亮', rows[0].textContent.includes('阅读时常亮'), true)
         assertEq('第二行是沉浸', rows[1].textContent.includes('全屏沉浸'), true)
         assertEq('第三行是外观设置', rows[2].textContent.includes('外观设置'), true)
+        assertEq('第四行是翻页方式（窄屏上顶栏按钮会挤，这是替代入口）', rows[3].textContent.includes('翻页方式'), true)
         assertEq('开关有 aria-checked', rows[0].getAttribute('aria-checked'), 'false')
 
         // 常亮

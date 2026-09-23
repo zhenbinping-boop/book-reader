@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Reader flow: page ↔ scroll + add-book bar</title>
+    <style>
+      body { font: 12px/1.5 monospace; padding: 12px; margin: 0; }
+      /* 又窄又矮：一章要跨好几屏，「滚到底再进下一章」和「锚点 == 顶段」才测得出来 */
+      #host { width: 280px; height: 320px; position: relative; border: 1px solid #888; overflow: hidden; }
+      #log { position: fixed; right: 0; top: 0; width: 560px; height: 100vh; background: #fff; z-index: 99999; padding: 10px; overflow: auto; border-left: 1px solid #ccc; }
+    </style>
+  </head>
+  <body>
+    <div id="host"></div>
+    <div id="log"></div>
+    <script>
+      window.__errs = []
+      window.addEventListener('error', (e) => {
+        window.__errs.push('WINDOW ERROR: ' + (e.message || e.error) + ' @ ' + (e.filename || '') + ':' + (e.lineno || ''))
+      })
+      window.addEventListener('unhandledrejection', (e) =>
+        window.__errs.push('REJECTION: ' + (e.reason && e.reason.message ? e.reason.message : e.reason))
+      )
+    </script>
+    <script type="module">
+      import '/src/styles.css'
+
+      const ENDPOINT = 'http://127.0.0.1:5178/log'
+      const IN_TARGET = location.pathname.endsWith('dev-flow.html')
+      const log = (m) => {
+        document.getElementById('log').innerHTML += `<div>${m}</div>`
+        if (IN_TARGET) { try { fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true }) } catch {} }
+      }
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+      const dump = () => window.__errs.forEach((e) => log(e))
+      let failed = 0
+      const assertEq = (label, got, want) => {
+        const pass = got === want
+        if (!pass) failed++
+        log(`${pass ? 'ok  ' : 'BAD '}${label}: ${JSON.stringify(got)}` + (pass ? '' : ' (want ' + JSON.stringify(want) + ')'))
+      }
+      const ok = (label, cond) => {
+        if (!cond) failed++
+        log(`${cond ? 'ok  ' : 'BAD '}${label}`)
+      }
+      // until 只收**同步**判定（Promise 恒为真），异步断言一律用 waitFor
+      const until = async (fn, ms = 6000, step = 50) => {
+        const t0 = Date.now()
+        for (;;) {
+          let v = null
+          try { v = fn() } catch (e) { v = null }
+          if (v) return v
+          if (Date.now() - t0 > ms) return null
+          await sleep(step)
+        }
+      }
+      const waitFor = async (fn, ms = 6000, step = 50) => {
+        const t0 = Date.now()
+        for (;;) {
+          let v = null
+          try { v = await fn() } catch (e) { v = null }
+          if (v) return v
+          if (Date.now() - t0 > ms) return null
+          await sleep(step)
+        }
+      }
+
+      const host = document.getElementById('host')
+      const PREF_KEY = 'book-reader:prefs'
+
+      try {
+        log('boot')
+
+        const { db } = await import('/src/db.js')
+        const { loadPrefs, savePrefs } = await import('/src/lib/prefs.js')
+        const { importFile } = await import('/src/lib/importer.js')
+        const { decodeBytes, splitChapters } = await import('/src/lib/txtText.js')
+        const React = (await import('react')).default
+        const { createRoot } = await import('react-dom/client')
+        const Shelf = (await import('/src/components/Shelf.jsx')).default
+        const TxtReader = (await import('/src/components/TxtReader.jsx')).default
+        const EpubReader = (await import('/src/components/EpubReader.jsx')).default
+
+        await db.delete()
+        await db.open()
+        log('db cleared')
+
+        /* ================= 1. 偏好：版式枚举 ================= */
+        window.localStorage.removeItem(PREF_KEY)
+        assertEq('默认版式是「翻页」', loadPrefs().readerFlow, 'page')
+        savePrefs({ readerFlow: 'scroll' })
+        assertEq('滚动版式存得下', loadPrefs().readerFlow, 'scroll')
+        window.localStorage.setItem(PREF_KEY, JSON.stringify({ readerFlow: 'diagonal' }))
+        assertEq('非法值退回默认（白名单校验）', loadPrefs().readerFlow, 'page')
+        window.localStorage.setItem(PREF_KEY, JSON.stringify({ readerFlow: 'scroll' }))
+        assertEq('合法值原样保留', loadPrefs().readerFlow, 'scroll')
+
+        /* ================= 2. 书架：日常只显示「添加图书」 ================= */
+        {
+          const sh = document.createElement('div')
+          sh.style.cssText = 'position:absolute;left:-9999px;top:0;width:900px;height:600px'
+          document.body.appendChild(sh)
+          const r = createRoot(sh)
+          r.render(
+            React.createElement(Shelf, { books: [], onImport: () => {}, onDelete: () => {}, onOpenBackup: () => {} })
+          )
+          const toggle = await until(() => sh.querySelector('.add-toggle'), 4000)
+          ok('添加图书栏渲染出来了', !!toggle)
+          assertEq('平时只有一行「添加图书」', toggle.textContent.replace(/\s+/g, ''), '＋添加图书▾')
+          assertEq('平时是收起的', toggle.dataset.open, '0')
+          assertEq('收起时不列格式', sh.querySelectorAll('.fmt-btn').length, 0)
+          const fileInput = sh.querySelector('input[type=file]')
+          ok(
+            '收起时三种格式都收',
+            ['.pdf', '.txt', '.epub'].every((s) => (fileInput.getAttribute('accept') || '').includes(s))
+          )
+          ok('书架空了也有引导', /还没有书/.test(sh.querySelector('.empty')?.textContent || ''))
+          assertEq('平时没有常驻的拖拽区', sh.querySelectorAll('.dropzone').length, 0)
+
+          toggle.click()
+          const fmts = await until(() => {
+            const list = [...sh.querySelectorAll('.fmt-btn')]
+            return list.length === 3 ? list : null
+          }, 4000)
+          ok('点开后列出三种格式', !!fmts)
+          assertEq('展开后标记为展开', sh.querySelector('.add-toggle')?.dataset.open, '1')
+          assertEq('格式顺序', fmts.map((b) => b.dataset.fmt).join(','), 'pdf,txt,epub')
+          assertEq('按钮上是格式名', fmts.map((b) => b.querySelector('b').textContent).join(','), 'PDF,TXT,EPUB')
+          ok('展开了也提示可以拖进来', /拖进书架/.test(sh.querySelector('.add-hint')?.textContent || ''))
+
+          fmts[0].click()
+          assertEq('点 PDF 时选择器收窄到 PDF', fileInput.getAttribute('accept'), '.pdf,application/pdf')
+          fmts[2].click()
+          assertEq('点 EPUB 时收窄到 EPUB', fileInput.getAttribute('accept'), '.epub,application/epub+zip')
+
+          sh.querySelector('.add-toggle').click()
+          await until(() => sh.querySelector('.add-toggle')?.dataset.open === '0', 4000)
+          assertEq('再点一下收起', sh.querySelectorAll('.fmt-btn').length, 0)
+          ok(
+            '收起时 accept 还原成三种都收',
+            ['.pdf', '.txt', '.epub'].every((s) => (fileInput.getAttribute('accept') || '').includes(s))
+          )
+          r.unmount()
+          sh.remove()
+        }
+
+        /* ---------- 通用探针 ---------- */
+        const vp = () => host.querySelector('.txt-viewport')
+        const cols = () => host.querySelector('.txt-columns')
+        const segs = () => [...(cols()?.children || [])]
+        const flowBtn = () =>
+          [...host.querySelectorAll('.reader-top .btn')].find((b) => b.dataset.flow)
+        const chapLabel = () => (host.querySelector('.scrub-chap')?.textContent || '').replace(/\s+/g, '')
+        const scrubNum = () => (host.querySelector('.scrub-num')?.textContent || '').trim()
+        const pageLabel = () => {
+          const m = scrubNum().match(/(\d+)\s*\/\s*(\d+)/)
+          return m ? { page: Number(m[1]), pages: Number(m[2]) } : null
+        }
+        /**
+         * 视口顶部压着的是第几段 —— 这里**故意自己按几何重算一遍**，
+         * 不复用阅读器内部那套，否则「锚点是否等于顶段」就成了自证。
+         */
+        const topIdx = () => {
+          const v = vp()
+          const cs = cols()
+          if (!v || !cs || !cs.children.length) return -1
+          const top = v.getBoundingClientRect().top
+          let last = -1
+          for (const p of cs.children) {
+            if (p.getBoundingClientRect().bottom > top + 1) return Number(p.dataset.seg)
+            last = Number(p.dataset.seg)
+          }
+          return last
+        }
+        /** 拖 range：React 认的是原生 value 的 setter，直接赋 .value 它看不见 */
+        const setRange = (input, v) => {
+          const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+          set.call(input, String(v))
+          input.dispatchEvent(new Event('input', { bubbles: true }))
+        }
+        const clickTopBtn = async (text, ms = 6000) => {
+          const b = await until(
+            () => [...host.querySelectorAll('.reader-top .btn')].find((x) => x.textContent.trim() === text),
+            ms
+          )
+          if (b) b.click()
+          return !!b
+        }
+
+        /* ================= 3. TXT：竖向滚动 ================= */
+        await db.delete()
+        await db.open()
+        const asFile = async (name, url, type) => new File([await (await fetch(url)).arrayBuffer()], name, { type })
+        const TXT_URL = '/@fs/D:/book-reader/samples/sample-utf8.txt'
+        const txtFile = await asFile('sample-utf8.txt', TXT_URL, 'text/plain')
+        const rt = await importFile(txtFile)
+        assertEq('TXT 导入', rt.format, 'txt')
+
+        // 独立的「章起点」参照物：章内偏移要和它相加才能对上段上的绝对 data-start
+        const rawTxt = decodeBytes(await (await fetch(TXT_URL)).arrayBuffer()).text
+        const CHS = splitChapters(rawTxt)
+        assertEq('独立算出 5 章', CHS.length, 5)
+
+        savePrefs({ readerFlow: 'scroll' })
+        const makeTxt = () => {
+          const r = createRoot(host)
+          r.render(React.createElement(TxtReader, { bookId: rt.id, title: 'sample', onBack: () => {} }))
+          return r
+        }
+        let root = makeTxt()
+        ok('滚动模式挂起来了', !!(await until(() => vp() && vp().classList.contains('scroll-flow'), 9000)))
+        ok('.txt-columns 也切成滚动版式', !!cols()?.classList.contains('scroll-flow'))
+        assertEq('滚动模式下不再写内联栏宽 / 栏高', cols().getAttribute('style'), null)
+        assertEq('顶栏按钮显示当前版式', flowBtn()?.textContent.trim(), '滚动')
+        assertEq('按钮带 data-flow 便于断言', flowBtn()?.dataset.flow, 'scroll')
+        assertEq('没有 x / y 页码，改成章内百分比', /%$/.test(scrubNum()), true)
+
+        // 换到「第1章 出发」（够长，能滚好几屏）。顺便走一遍目录跳转
+        await clickTopBtn('面板')
+        const ch1 = await until(() => [...host.querySelectorAll('.outline-item')].find((b) => b.textContent.includes('出发')))
+        ok('目录里有第 1 章', !!ch1)
+        ch1.click()
+        ok('跳到第 1 章', !!(await until(() => (/出发/.test(host.querySelector('.txt-head-title')?.textContent || '') ? true : null), 6000)))
+
+        const n = await until(() => (segs().length > 4 ? segs().length : null), 6000)
+        ok(`这一章有 ${n} 段（够滚）`, !!n)
+
+        const range = () => host.querySelector('.reader-bottom input[type=range]')
+        const k = Math.max(1, Math.floor(n * 0.6))
+        setRange(range(), k + 1)
+        await until(() => (topIdx() === k ? true : null), 3000)
+        assertEq('拖滑杆把目标段顶到了视口最上面', topIdx(), k)
+
+        // 关键回归：落盘的章内偏移 == 当前顶段的 data-start（只断言 >0 抓不住这个）
+        await sleep(950)
+        const prog = await db.progress.get(rt.id)
+        const absStart = Number(segs()[k].dataset.start)
+        assertEq('落盘的章内偏移 == 顶段的 data-start', prog?.charOffset, absStart - CHS[prog?.chapterIndex].start)
+        assertEq('落盘的章号就是当前章', prog?.chapterIndex, 1)
+        assertEq('进度 page 仍是 1 基章号（书架算百分比用）', prog?.page, 2)
+        assertEq('版式切换不改进度里的 mode 字段', prog?.mode, 'page')
+
+        // 重挂 → 回到同一段（位置是「章 + 章内偏移」，与版式无关）
+        root.unmount()
+        await sleep(150)
+        root = makeTxt()
+        await until(() => vp() && vp().classList.contains('scroll-flow'), 9000)
+        const back = await until(() => (topIdx() === k ? topIdx() : null), 7000)
+        assertEq('重挂后回到离开时的那一段', back, k)
+
+        // 边界：滚到底再往下 = 进下一章
+        const t0 = vp()
+        t0.scrollTop = t0.scrollHeight
+        await sleep(250)
+        const beforeChap = chapLabel()
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true }))
+        const afterChap = await until(() => {
+          const t = chapLabel()
+          return t && t !== beforeChap ? t : null
+        }, 6000)
+        ok(`滚到底再往下走，换到下一章（${beforeChap} → ${afterChap}）`, !!afterChap)
+
+        // 边界：回到章首再往上 = 回上一章
+        const t1 = vp()
+        t1.scrollTop = 0
+        await sleep(250)
+        const beforeBack = chapLabel()
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true }))
+        const backChap = await until(() => {
+          const t = chapLabel()
+          return t && t !== beforeBack ? t : null
+        }, 6000)
+        ok(`章首再往上走，回上一章（${beforeBack} → ${backChap}）`, !!backChap)
+
+        // 切回翻页：位置不丢（锚点段应落在当前显示的那一栏）
+        const k2 = topIdx()
+        flowBtn().click()
+        await until(() => !cols().classList.contains('scroll-flow'), 5000)
+        assertEq('切回翻页后不再有 scroll-flow', cols().classList.contains('scroll-flow'), false)
+        ok('栏宽 / 栏高又写回内联 style', /column-width/.test(cols().getAttribute('style') || ''))
+        assertEq('顶栏按钮变回「翻页」', flowBtn()?.textContent.trim(), '翻页')
+        assertEq('底部滑杆变回 x / y', !!pageLabel(), true)
+        const colOf = (idx) => {
+          const cs = cols()
+          const el = cs?.children?.[idx]
+          const v = vp()
+          if (!el || !v) return -1
+          const x = el.getBoundingClientRect().left - v.getBoundingClientRect().left + v.scrollLeft
+          return Math.max(0, Math.floor((x + 1) / (v.clientWidth + 40)))
+        }
+        const pl = await until(() => pageLabel(), 4000)
+        log(`切版式校验：动之前顶段 ${k2}，切完落在第 ${pl?.page}/${pl?.pages} 页`)
+        assertEq('切版式后锚点段就在当前那一栏（位置没丢）', colOf(k2), pl.page - 1)
+
+        root.unmount()
+        await sleep(120)
+        host.innerHTML = ''
+
+        /* ================= 4. EPUB：同一条链路 ================= */
+        await db.delete()
+        await db.open()
+        const epubFile = await asFile('sample.epub', '/@fs/D:/book-reader/samples/sample.epub', 'application/epub+zip')
+        const re = await importFile(epubFile)
+        assertEq('EPUB 导入', re.format, 'epub')
+
+        const makeEpub = () => {
+          const r = createRoot(host)
+          r.render(React.createElement(EpubReader, { bookId: re.id, title: '样例电子书', onBack: () => {} }))
+          return r
+        }
+        // 上一段最后把版式切回了翻页（那正是被测行为），这里重新置成滚动
+        savePrefs({ readerFlow: 'scroll' })
+        root = makeEpub()
+        ok('EPUB 滚动模式挂起来了', !!(await until(() => vp() && vp().classList.contains('scroll-flow'), 14000)))
+        assertEq('EPUB 也不再写内联栏宽 / 栏高', cols().getAttribute('style'), null)
+        assertEq('EPUB 顶栏按钮同样显示「滚动」', flowBtn()?.textContent.trim(), '滚动')
+
+        // 第 1 节太短（封面那类），换到第 3 节 —— 它既够长、又带图，
+        // 图片解码会改版面，正好把「等版面定格再定位」那条链路一起走一遍
+        await clickTopBtn('面板')
+        const eitem = await until(() => {
+          const items = [...host.querySelectorAll('.outline-item')]
+          return items.length >= 3 ? items[2] : null
+        }, 10000)
+        ok('EPUB 目录至少有 3 节', !!eitem)
+        eitem.click()
+        const en = await until(() => (segs().length > 4 ? segs().length : null), 14000)
+        ok(`这一节有 ${en} 段（够滚）`, !!en)
+
+        // 图片异步解码会改版面 —— 等它们全部定格再定位，否则量到的是错的段
+        await until(() => [...host.querySelectorAll('.txt-p img')].every((im) => im.complete), 10000)
+
+        const ek = Math.max(1, Math.floor(en / 2))
+        setRange(host.querySelector('.reader-bottom input[type=range]'), ek + 1)
+        await until(() => (topIdx() === ek ? true : null), 3000)
+        assertEq('EPUB：拖滑杆把目标段顶到视口最上面', topIdx(), ek)
+
+        await sleep(950)
+        const eprog = await db.progress.get(re.id)
+        const eAbs = Number(segs()[ek].dataset.start)
+        assertEq('EPUB 落盘锚点 == 顶段的 data-start（章内偏移）', eprog?.charOffset, eAbs)
+        assertEq('EPUB 进度 page 是 1 基节号', eprog?.page, eprog?.chapterIndex + 1)
+
+        root.unmount()
+        await sleep(150)
+        root = makeEpub()
+        await until(() => vp() && vp().classList.contains('scroll-flow'), 14000)
+        const eback = await until(() => (topIdx() === ek ? topIdx() : null), 12000)
+        assertEq('EPUB 重挂后回到离开时的那一段', eback, ek)
+
+        // 一节读完 → 进下一节
+        const et = vp()
+        et.scrollTop = et.scrollHeight
+        await sleep(250)
+        const eBefore = chapLabel()
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true }))
+        const eAfter = await until(() => {
+          const t = chapLabel()
+          return t && t !== eBefore ? t : null
+        }, 8000)
+        ok(`EPUB 滚到底再往下走，换到下一节（${eBefore} → ${eAfter}）`, !!eAfter)
+
+        root.unmount()
+        await sleep(120)
+        host.innerHTML = ''
+
+        dump()
+        log(failed ? 'RESULT: FAIL (' + failed + ' 条断言未过)' : 'RESULT: PASS')
+        log('ALL DONE')
+      } catch (e) {
+        log('THROWN: ' + (e && e.message ? e.message : e))
+        log('stack: ' + (e && e.stack ? String(e.stack).split('\n').slice(0, 4).join(' | ') : ''))
+        dump()
+        log('ALL DONE')
+      }
+    </script>
+  </body>
+</html>

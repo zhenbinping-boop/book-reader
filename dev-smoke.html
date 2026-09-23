@@ -65,7 +65,7 @@
         await new Promise((r) => setTimeout(r, 2500))
 
         log('mounted. rootChildren=' + rootEl.children.length + ' totalNodes=' + document.querySelectorAll('*').length)
-        log('shelf: topbar=' + !!document.querySelector('.topbar') + ' dropzone=' + !!document.querySelector('.dropzone'))
+        log('shelf: topbar=' + !!document.querySelector('.topbar') + ' add-bar=' + !!document.querySelector('.add-bar'))
         log('shelf: cards=' + document.querySelectorAll('.card').length + ' coverImg=' + !!document.querySelector('.cover img'))
         log('shelf: firstTitle="' + (document.querySelector('.card-title')?.textContent || '') + '"')
         log('shelf: meta="' + (document.querySelector('.card-meta span')?.textContent || '') + '"')

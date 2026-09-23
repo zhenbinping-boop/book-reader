@@ -8,8 +8,9 @@
 
 **阅读**
 
-- 三种格式统一体验：PDF 固定版式；TXT / EPUB 走同一套流式排版（CSS 多栏分页）
-- 连续滚动 / 单页 双模式（PDF）；TXT / EPUB 为左右翻栏
+- 三种格式统一体验：PDF 固定版式；TXT / EPUB 走同一套流式排版
+- 两种翻页方式，三种格式都有：**翻页**（一次一屏）与**滚动**（竖向连续滑动），
+  顶栏一键切换、按设备记住；来回切版式不会丢位置
 - PDF 按页懒渲染 + 虚拟窗口（长文档只渲染视口附近的页，避免移动端内存崩溃）
 - 目录跳转（EPUB 支持 EPUB3 nav 与 EPUB2 NCX 两套目录，含嵌套层级）
 - 缩放（PDF 改渲染倍率；TXT / EPUB 改字号并吸附档位）、点击中央唤出工具栏
@@ -34,6 +35,7 @@
 
 **导入与存储**
 
+- 书架上的「＋ 添加图书」栏平时只占一行，点开才列出 PDF / TXT / EPUB 三种格式
 - 拖拽或选择文件导入，自动提取封面（EPUB 读 OPF 里的封面图并压成缩略图）
 - 按**文件内容指纹**（SHA-256）查重：重复导入同一文件不会多出一本
 - 元数据、文件二进制、进度、高亮、书签、文本索引全部存 IndexedDB
@@ -166,6 +168,7 @@ python tools/browser_smoke.py http://localhost:5173/dev-bookmark.html
 | `dev-epub.html` | ZIP / EPUB 结构 / XHTML 展平（解析层） |
 | `dev-epub-reader.html` | EPUB 阅读器集成（分页、深链、图片重排、进度恢复） |
 | `dev-bookmark.html` | 书签：数据层 / 备份去重 / 侧栏 / 三种格式阅读器 |
+| `dev-flow.html` | 翻页 ↔ 竖向滚动两种版式（TXT + EPUB）与「添加图书」栏 |
 | `dev-app.html` | App 级端到端（导入 → 书架 → 路由 → 阅读器 → 进度写回） |
 | `dev-history.html` | 位置后退栈 |
 | `dev-backup.html` | 备份导出 / 恢复 |

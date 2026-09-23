@@ -337,6 +337,110 @@ button {
   margin-bottom: var(--sp-1);
 }
 
+/* ---------- 「添加图书」栏 ----------
+   收起时只有一行「＋ 添加图书」，点开才列出三种格式（Shelf.jsx）。
+   行高与边框在两种状态下保持一致，展开时书架不会整体跳一下。 */
+
+.add-bar {
+  border: 1px dashed var(--ui-border);
+  border-radius: var(--radius-lg);
+  background: var(--ui-surface);
+  margin-bottom: var(--sp-5);
+  overflow: hidden;
+  transition: border-color var(--dur-1) var(--ease-out);
+}
+
+.add-bar.open,
+.add-bar:hover {
+  border-color: var(--ui-accent);
+}
+
+.add-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  /* 触控最小尺寸 44px（DESIGN.md §8） */
+  min-height: var(--tap-min);
+  padding: var(--sp-3) var(--sp-4);
+  border: 0;
+  background: none;
+  color: var(--ui-text);
+  font: inherit;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.add-toggle:active {
+  background: var(--ui-accent-soft);
+}
+
+.add-plus {
+  color: var(--ui-accent);
+  font-size: var(--fs-xl);
+  line-height: 1;
+}
+
+/* 箭头只做状态提示，展开时翻过来（和折叠面板一个套路） */
+.add-caret {
+  margin-left: auto;
+  color: var(--ui-text-muted);
+  font-size: var(--fs-md);
+  transition: transform var(--dur-2) var(--ease-out);
+}
+
+.add-bar.open .add-caret {
+  transform: rotate(180deg);
+}
+
+.add-formats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-4) var(--sp-4);
+}
+
+.fmt-btn {
+  flex: 1 1 104px;
+  min-height: var(--tap-min);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: var(--sp-2);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  background: var(--ui-surface-2);
+  color: var(--ui-text);
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out);
+}
+
+.fmt-btn b {
+  font-size: var(--fs-base);
+  letter-spacing: 0.5px;
+}
+
+.fmt-btn span {
+  font-size: var(--fs-xs);
+  color: var(--ui-text-muted);
+}
+
+.fmt-btn:active {
+  background: var(--ui-accent-soft);
+  border-color: var(--ui-accent);
+}
+
+.add-hint {
+  flex: 1 0 100%;
+  font-size: var(--fs-sm);
+  color: var(--ui-text-muted);
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -1471,6 +1575,32 @@ button {
   font-size: var(--reader-size);
   line-height: var(--reader-leading);
   overflow-wrap: break-word;
+}
+
+/* ---------- 竖向滚动版式（TXT / EPUB 共用，DESIGN.md §15）----------
+
+   和上面的分栏分页是**同一份 DOM**，只靠一个 class 换版式：视口从
+   「横向滚动 + 定高多栏」变成「竖向滚动 + 单栏自然高度」。切换点只有一个 ——
+   `prefs.readerFlow`，读者在顶栏点一下。
+
+   两个必须记住的点：
+   1. `.txt-columns` 在滚动模式里不能再有固定高度与 column-width ——
+      那两个值是分栏分页的输入，留着会把内容继续切成横向的栏。
+   2. 底部必须留白（约一屏）。否则「把末尾那一段顶到视口顶部」这个定位动作
+      根本做不到（scrollTop 到不了那么大），每次恢复位置都会悄悄退到前一段。 */
+
+.txt-viewport.scroll-flow {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.txt-columns.scroll-flow {
+  width: 100%;
+  height: auto;
+  column-width: auto;
+  column-count: auto;
+  padding-bottom: 50vh;
 }
 
 .txt-p {

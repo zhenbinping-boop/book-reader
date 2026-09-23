@@ -96,6 +96,8 @@ export default function TxtReader({ bookId, title, onBack }) {
   const popoverRef = useRef(null)
   const touchRef = useRef(null)
   const prefsRef = useRef(loadPrefs())
+  /** 版式也留一份 ref：滚动 / 翻页的分支都在回调里，不该把它们变成依赖（会重建一堆 useCallback） */
+  const flowRef = useRef(loadPrefs().readerFlow)
   /** 手势中的临时缩放作用在分栏层上。分栏层的宽度可能是视口的几十倍，
    * 所以 transform-origin 必须按视口算 —— 见 usePinch 的 applyPinchFx */
   const pinchRef = useRef(null)
@@ -113,6 +115,10 @@ export default function TxtReader({ bookId, title, onBack }) {
   pagesRef.current = pages
   highlightsRef.current = highlights
   prefsRef.current = prefs
+  flowRef.current = prefs.readerFlow
+
+  /** 当前版式：'page'（一次一屏，左右翻页）/ 'scroll'（本节内竖向滚动） */
+  const flow = prefs.readerFlow
 
   const chapters = doc?.chapters ?? []
   const total = chapters.length
@@ -220,18 +226,64 @@ export default function TxtReader({ bookId, title, onBack }) {
     setPage(target)
   }, [])
 
-  /** 章内字符偏移 → 应该显示在第几栏 */
+  /* ---------------- 竖向滚动版式（flow === 'scroll'） ----------------
+     分页模式的「位置」是 scrollLeft 除以栏宽；滚动模式的位置则直接是 DOM 几何 ——
+     视口顶部压着的是哪一段，人就在哪儿。下面三个函数就是这套坐标的换算，
+     其余逻辑（书签 / 后退栈 / 进度写回 / 划词）**一行都不用改**，
+     因为它们只认「章 + 章内字符偏移」和「当前单位」这两个抽象。 */
+
+  /**
+   * 视口顶部压着的那一段。
+   *
+   * 用 rect.bottom > 视口顶 来找第一段「跨过顶线」的：它才是此刻在读的那一段。
+   * 长段落从上方延续过来时它也正好是那一段，所以不像分页模式那样需要「往前退一段」的兜底；
+   * 只有滚到最底部（后面已经没有内容）时才返回最后一段。
+   */
+  const topSegInFlow = useCallback(() => {
+    const cols = colRef.current
+    const vp = vpRef.current
+    if (!cols || !vp) return null
+    const top = vp.getBoundingClientRect().top
+    let last = null
+    for (const el of cols.children) {
+      if (el.getBoundingClientRect().bottom > top + 1) return { el, exact: true }
+      last = el
+    }
+    return last ? { el: last, exact: false } : null
+  }, [])
+
+  /** 把第 idx 段顶到视口最上面。用实时 rect 差值算，不去猜 offsetParent 链 */
+  const scrollToSeg = useCallback((idx) => {
+    const vp = vpRef.current
+    const el = colRef.current?.children?.[idx]
+    if (!vp || !el) return
+    vp.scrollTop += el.getBoundingClientRect().top - vp.getBoundingClientRect().top
+  }, [])
+
+  /** 章内字符偏移 → 滚到那一段（滚动模式的「跳转」） */
+  const scrollToOffset = useCallback(
+    (charOffset, list) => {
+      scrollToSeg(segmentAt(list, (chap?.start ?? 0) + Math.max(0, charOffset || 0)))
+    },
+    [chap, scrollToSeg]
+  )
+
+  /** 章内字符偏移 → 应该在当前位置序号上的第几个单位 */
   const pageForCharOffset = useCallback(
     (charOffset, list) => {
       const segIdx = segmentAt(list, (chap?.start ?? 0) + charOffset)
       if (segIdx < 0) return 0
+      // 滚动模式里「当前单位」就是**段下标**（视口顶部压着第几段）。
+      // 书签与后退栈的判据是「目标单位 == 当前单位」，把单位从「栏」换成「段」即可，
+      // 判据本身不用动 —— 与分页模式是同一条（见 MEMORY 的「锚点落在当前显示的栏里」）。
+      if (flowRef.current === 'scroll') return segIdx
       const p = pageOfSegment(colRef.current, segIdx, geo())
       return p < 0 ? 0 : p
     },
     [chap, geo]
   )
 
-  /** 换章。charOffset 是章内偏移；atEnd=true 时定位到该章最后一页 */
+  /** 换章。charOffset 是章内偏移；atEnd=true 时定位到该章最后一页（滚动模式下即滚到底） */
   const goChapter = useCallback((i, charOffset = 0, atEnd = false) => {
     const n = docRef.current?.chapters?.length ?? 0
     if (!n) return
@@ -241,7 +293,11 @@ export default function TxtReader({ bookId, title, onBack }) {
     // 用户已经主动翻过页，之后的页码变化都可以记账了
     restoredRef.current = true
     const vp = vpRef.current
-    if (vp) vp.scrollLeft = 0
+    // 换章要把视口回到开头。两种版式各自回到自己的原点：横向的 scrollLeft 或竖向的 scrollTop
+    if (vp) {
+      if (flowRef.current === 'scroll') vp.scrollTop = 0
+      else vp.scrollLeft = 0
+    }
     setPage(0)
     setChapter(t)
     // 定位副作用挂在 chapter / paras 上，**同章内跳到章内别处时这两者都没变**，
@@ -250,15 +306,49 @@ export default function TxtReader({ bookId, title, onBack }) {
     setJumpSeq((s) => s + 1)
   }, [])
 
+  /**
+   * 滚动模式下的「翻页」= 往下滚一屏。
+   *
+   * 这就是「只在当前节内滚动」的边界行为：滚到底再往下走，才进下一章
+   * （而不是无声无息地无限加载）。往上同理，退到章首再往上走回到上一章的末尾。
+   */
+  const scrollByScreen = useCallback(
+    (dir) => {
+      const vp = vpRef.current
+      if (!vp) return
+      const max = Math.max(0, vp.scrollHeight - vp.clientHeight)
+      if (dir > 0 && vp.scrollTop >= max - 4) return goChapter(chapterRef.current + 1, 0, false)
+      if (dir < 0 && vp.scrollTop <= 4) return goChapter(chapterRef.current - 1, 0, true)
+      const step = Math.max(60, vp.clientHeight * 0.9)
+      const to = Math.max(0, Math.min(max, vp.scrollTop + dir * step))
+      vp.scrollTo({ top: to, behavior: 'smooth' })
+    },
+    [goChapter]
+  )
+
   const nextPage = useCallback(() => {
+    if (flowRef.current === 'scroll') return scrollByScreen(1)
     if (pageRef.current < pagesRef.current - 1) scrollToPage(pageRef.current + 1, true)
     else goChapter(chapterRef.current + 1, 0, false)
-  }, [scrollToPage, goChapter])
+  }, [scrollByScreen, scrollToPage, goChapter])
 
   const prevPage = useCallback(() => {
+    if (flowRef.current === 'scroll') return scrollByScreen(-1)
     if (pageRef.current > 0) scrollToPage(pageRef.current - 1, true)
     else goChapter(chapterRef.current - 1, 0, true)
-  }, [scrollToPage, goChapter])
+  }, [scrollByScreen, scrollToPage, goChapter])
+
+  /**
+   * 切换翻页 / 滚动。
+   *
+   * 版式换了，坐标系统也换了（栏 ↔ 段），但**位置本身没变** ——
+   * 把当前锚点交给重排后的定位副作用再落一次，人就不会因为切了一下版式而跳走。
+   */
+  const toggleFlow = useCallback(() => {
+    const next = flowRef.current === 'scroll' ? 'page' : 'scroll'
+    pendingAnchorRef.current = { charOffset: anchorRef.current }
+    setPrefs(savePrefs({ readerFlow: next }))
+  }, [])
 
   /* ---------------- 位置后退栈 ---------------- */
 
@@ -329,10 +419,13 @@ export default function TxtReader({ bookId, title, onBack }) {
 
   /** 当前页最上面那段文字的开头 —— 书签列表里的摘要，用来认出「这是哪儿」 */
   const snippetHere = useCallback(() => {
-    const seg = firstSegOnPage(colRef.current, pageRef.current, geo())
+    const seg =
+      flowRef.current === 'scroll'
+        ? topSegInFlow()
+        : firstSegOnPage(colRef.current, pageRef.current, geo())
     const text = seg?.el?.textContent?.replace(/\s+/g, ' ').trim() ?? ''
     return text.slice(0, 40)
-  }, [geo])
+  }, [geo, topSegInFlow])
 
   const toggleBookmark = useCallback(async () => {
     try {
@@ -380,9 +473,35 @@ export default function TxtReader({ bookId, title, onBack }) {
   // 排版尺寸 / 参数变化后重新测量，并把「刚才在读的那段文字」重新对到当前页
   const appearanceKey = `${prefs.readerSize}|${prefs.readerLeading}|${prefs.readerParaGap}|${prefs.readerPad}`
   useLayoutEffect(() => {
-    if (phase !== 'ready' || !colW || !colH || !paras.length) return
+    if (phase !== 'ready' || !paras.length) return
     const cols = colRef.current
     if (!cols) return
+
+    // ---- 滚动模式：不量栏，直接把锚点那一段顶到视口顶部 ----
+    if (flow === 'scroll') {
+      // 段数是这个版式下的「位置刻度」，滑杆要用它
+      pagesRef.current = paras.length
+      setPages(paras.length)
+      const first = !restoredRef.current
+      if (first) restoredRef.current = true
+      const anchor = pendingAnchorRef.current ?? (first ? jumpRef.current : null)
+      pendingAnchorRef.current = null
+      if (pendingEndRef.current) {
+        pendingEndRef.current = false
+        const vp = vpRef.current
+        if (vp) vp.scrollTop = vp.scrollHeight
+        return
+      }
+      if (anchor) {
+        scrollToOffset(anchor.charOffset, paras)
+        jumpRef.current = null
+        // 恢复完立刻记账，避免「刚打开就退出」把位置丢掉
+        anchorRef.current = anchor.charOffset
+      }
+      return
+    }
+
+    if (!colW || !colH) return
 
     // 行宽上限是 CSS 变量算出来的（34em），所以**改字号会连带改栏宽**，
     // 而视口宽度变化先于 React state 落到 colW/colH 上。
@@ -420,28 +539,35 @@ export default function TxtReader({ bookId, title, onBack }) {
     }
     if (pageRef.current > counted - 1) scrollToPage(counted - 1, false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, colW, colH, paras, appearanceKey, chapter, jumpSeq, scrollToPage])
+  }, [phase, colW, colH, paras, appearanceKey, chapter, jumpSeq, scrollToPage, flow, scrollToOffset])
 
   // 当前页最上面那段文字 = 位置锚点（换字号、旋屏、下次打开都靠它）
   useEffect(() => {
     if (phase !== 'ready' || !paras.length) return
-    const seg = firstSegOnPage(colRef.current, page, geo())
+    const seg = flow === 'scroll' ? topSegInFlow() : firstSegOnPage(colRef.current, page, geo())
     if (!seg?.el) return
     const abs = Number(seg.el.dataset.start)
     if (Number.isFinite(abs)) anchorRef.current = Math.max(0, abs - (chap?.start ?? 0))
-  }, [page, phase, paras, chap, colW, colH, geo])
+  }, [page, phase, paras, chap, colW, colH, geo, flow, topSegInFlow])
 
   const onScroll = useCallback(() => {
     if (rafRef.current) return
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = 0
       const vp = vpRef.current
+      if (!vp) return
+      if (flowRef.current === 'scroll') {
+        const seg = topSegInFlow()
+        const idx = seg?.el ? Number(seg.el.dataset.seg) : -1
+        if (idx >= 0) setPage((prev) => (prev === idx ? prev : idx))
+        return
+      }
       const w = boxRef.current.w
-      if (!vp || !w) return
+      if (!w) return
       const p = Math.round(vp.scrollLeft / (w + GAP))
       setPage((prev) => (prev === p ? prev : p))
     })
-  }, [])
+  }, [topSegInFlow])
 
   /* ---------------- 进度写回 ---------------- */
 
@@ -576,6 +702,17 @@ export default function TxtReader({ bookId, title, onBack }) {
       onClick: () => {
         setMenu(false)
         setAppearance(true)
+      },
+    },
+    {
+      // 窄屏上顶栏按钮会挤，这条是「切换翻页方式」的替代入口（DESIGN.md §15）
+      key: 'flow',
+      type: 'action',
+      label: '翻页方式',
+      value: flow === 'scroll' ? '竖向滚动' : '左右翻页',
+      onClick: () => {
+        setMenu(false)
+        toggleFlow()
       },
     },
   ]
@@ -868,7 +1005,7 @@ export default function TxtReader({ bookId, title, onBack }) {
     >
       <div className="txt-stage" onClick={onStageClick}>
         <div
-          className="txt-viewport"
+          className={`txt-viewport${flow === 'scroll' ? ' scroll-flow' : ''}`}
           ref={vpRef}
           onScroll={onScroll}
           onTouchStart={(e) => {
@@ -897,14 +1034,13 @@ export default function TxtReader({ bookId, title, onBack }) {
           }}
         >
           <div
-            className="txt-columns"
+            className={`txt-columns${flow === 'scroll' ? ' scroll-flow' : ''}`}
             ref={setCols}
-            style={{
-              width: colW || 1,
-              height: colH || 1,
-              columnWidth: colW || 1,
-              columnGap: GAP,
-            }}
+            style={
+              flow === 'scroll'
+                ? undefined
+                : { width: colW || 1, height: colH || 1, columnWidth: colW || 1, columnGap: GAP }
+            }
           >
             {paras.map((p, i) => (
               <p
@@ -968,6 +1104,14 @@ export default function TxtReader({ bookId, title, onBack }) {
         >
           下一章
         </button>
+        <button
+          className="btn btn-sm"
+          onClick={toggleFlow}
+          data-flow={flow}
+          title={flow === 'scroll' ? '现在是竖向滚动，点一下改回翻页' : '现在是翻页，点一下改成竖向滚动'}
+        >
+          {flow === 'scroll' ? '滚动' : '翻页'}
+        </button>
         <BookmarkButton on={!!currentBookmark} onToggle={toggleBookmark} />
         <button
           className="btn btn-sm"
@@ -995,16 +1139,32 @@ export default function TxtReader({ bookId, title, onBack }) {
           <span className="scrub-chap">
             第 {chapter + 1}/{total} 章
           </span>
-          <input
-            type="range"
-            min={1}
-            max={Math.max(1, pages)}
-            value={page + 1}
-            onChange={(e) => scrollToPage(Number(e.target.value) - 1, false)}
-          />
-          <span className="scrub-num">
-            {page + 1} / {pages}
-          </span>
+          {flow === 'scroll' ? (
+            <>
+              {/* 滚动模式下没有「第几页」，滑杆改成「第几段」—— 拖一下就能在节内定位 */}
+              <input
+                type="range"
+                min={1}
+                max={Math.max(1, pages)}
+                value={page + 1}
+                onChange={(e) => scrollToSeg(Number(e.target.value) - 1)}
+              />
+              <span className="scrub-num">{pct}%</span>
+            </>
+          ) : (
+            <>
+              <input
+                type="range"
+                min={1}
+                max={Math.max(1, pages)}
+                value={page + 1}
+                onChange={(e) => scrollToPage(Number(e.target.value) - 1, false)}
+              />
+              <span className="scrub-num">
+                {page + 1} / {pages}
+              </span>
+            </>
+          )}
         </div>
       </div>
 
