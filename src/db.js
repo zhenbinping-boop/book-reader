@@ -43,6 +43,7 @@ export const HIGHLIGHT_COLORS = ['yellow', 'green', 'blue', 'pink']
 
 export async function putBook({
   title,
+  author = '',
   format,
   pageCount,
   cover,
@@ -53,6 +54,8 @@ export async function putBook({
   const now = Date.now()
   const id = await db.books.add({
     title,
+    // 只有 EPUB 有作者信息（来自 OPF 的 dc:creator），PDF / TXT 留空
+    author,
     format,
     pageCount: pageCount ?? 0,
     cover: cover ?? null,
@@ -165,6 +168,38 @@ export async function updateHighlight(id, patch) {
 
 export async function deleteHighlight(id) {
   await db.highlights.delete(Number(id))
+}
+
+/* ---------- 书签 ---------- */
+
+/**
+ * 书签复用高亮那一套位置模型：
+ *   { page, charOffset }
+ * PDF 的 page 是**页序号（0 基）**、charOffset 恒为 0；TXT / EPUB 的 page 是章序号、
+ * charOffset 是章内字符偏移（与进度锚点同源，所以换字号 / 旋屏后依然指得准）。
+ * 形状统一之后，跳转、备份、恢复都不用为格式开分支。
+ *
+ * label / snippet 是**冗余的可读信息**（章标题、目标位置的文字开头），
+ * 只为书签列表好看，不参与定位 —— 定位永远只看 page + charOffset。
+ */
+export async function listBookmarks(bookId) {
+  const rows = await db.bookmarks.where('bookId').equals(Number(bookId)).toArray()
+  return rows.sort((a, b) => a.page - b.page || (a.charOffset ?? 0) - (b.charOffset ?? 0))
+}
+
+export async function addBookmark(row) {
+  return db.bookmarks.add({
+    charOffset: 0,
+    label: '',
+    snippet: '',
+    ...row,
+    bookId: Number(row.bookId),
+    createdAt: Date.now(),
+  })
+}
+
+export async function deleteBookmark(id) {
+  await db.bookmarks.delete(Number(id))
 }
 
 /* ---------- 全文搜索的文本索引 ---------- */

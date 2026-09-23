@@ -1,0 +1,722 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Mobile features test</title>
+    <style>
+      body { font: 12px/1.5 monospace; padding: 12px; margin: 0; }
+      #host { width: 720px; height: 520px; position: relative; border: 1px solid #888; }
+      #probe { position: absolute; left: -9999px; top: 0; }
+      #log { position: fixed; right: 0; top: 0; width: 540px; height: 100vh; background: #fff; z-index: 99999; padding: 10px; overflow: auto; border-left: 1px solid #ccc; }
+    </style>
+  </head>
+  <body>
+    <div id="host"></div>
+    <div id="probe"></div>
+    <div id="log"></div>
+    <script>
+      window.__errs = []
+      window.addEventListener('error', (e) => {
+        window.__errs.push('WINDOW ERROR: ' + (e.message || e.error) + ' @ ' + (e.filename || '') + ':' + (e.lineno || ''))
+      })
+      window.addEventListener('unhandledrejection', (e) =>
+        window.__errs.push('REJECTION: ' + (e.reason && e.reason.message ? e.reason.message : e.reason))
+      )
+    </script>
+    <script type="module">
+      import '/src/styles.css'
+
+      const ENDPOINT = 'http://127.0.0.1:5178/log'
+      const IN_TARGET = location.pathname.endsWith('dev-mobile.html')
+      const log = (m) => {
+        document.getElementById('log').innerHTML += `<div>${m}</div>`
+        if (IN_TARGET) { try { fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true }) } catch {} }
+      }
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+      const dump = () => window.__errs.forEach((e) => log(e))
+      let failed = 0
+      const assertEq = (label, got, want) => {
+        const pass = got === want
+        if (!pass) failed++
+        log(`${pass ? 'ok  ' : 'BAD '}${label}: ${JSON.stringify(got)}` + (pass ? '' : ' (want ' + JSON.stringify(want) + ')'))
+      }
+      const ok = (label, cond) => {
+        if (!cond) failed++
+        log(`${cond ? 'ok  ' : 'BAD '}${label}`)
+      }
+      const until = async (fn, ms = 5000, step = 50) => {
+        const t0 = Date.now()
+        for (;;) {
+          const v = fn()
+          if (v) return v
+          if (Date.now() - t0 > ms) return null
+          await sleep(step)
+        }
+      }
+
+      /* ---------- 合成触摸事件 ----------
+         无头 Chrome 里没有真手指，只能造 TouchEvent。
+         `touches` 是「还留在屏幕上的手指」，`changedTouches` 是「这次事件涉及的手指」——
+         两者的区别正是 hook 判断手势起止的依据，所以这里必须造对。
+
+         注意：桌面版 Chrome 不启用触摸时会**不暴露 `Touch` 构造函数**
+         （`window.Touch` 为 undefined），所以这里备一条降级路径：用普通 Event
+         挂上同名数组属性。React 读的是 `nativeEvent.touches`，两种都能吃。 */
+      const HAS_TOUCH_CTOR = typeof window.Touch === 'function' && typeof window.TouchEvent === 'function'
+      const mkTouch = (id, x, y, target) =>
+        HAS_TOUCH_CTOR
+          ? new Touch({ identifier: id, target, clientX: x, clientY: y, pageX: x, pageY: y, screenX: x, screenY: y })
+          : { identifier: id, target, clientX: x, clientY: y, pageX: x, pageY: y, screenX: x, screenY: y }
+      const fire = (el, type, pts, remaining) => {
+        const changed = pts.map((p, i) => mkTouch(i + 1, p[0], p[1], el))
+        const touches =
+          remaining !== undefined ? remaining : type === 'touchend' || type === 'touchcancel' ? [] : changed
+        const ev = HAS_TOUCH_CTOR
+          ? new TouchEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+              touches,
+              targetTouches: touches,
+              changedTouches: changed,
+            })
+          : new Event(type, { bubbles: true, cancelable: true })
+        if (!HAS_TOUCH_CTOR) {
+          // TouchEvent 的 touches / changedTouches 是只读 getter，只有降级路径才需要手挂
+          ev.touches = touches
+          ev.targetTouches = touches
+          ev.changedTouches = changed
+        }
+        el.dispatchEvent(ev)
+        return ev
+      }
+      /** 双指开合：从 d0 的距离拉到 d1 */
+      const pinch = (el, d0, d1) => {
+        const at = (d) => [
+          [200, 300],
+          [200 + d, 300],
+        ]
+        fire(el, 'touchstart', at(d0))
+        fire(el, 'touchmove', at(d1))
+        fire(el, 'touchend', at(d1), [])
+      }
+
+      try {
+        log('boot')
+
+        const db = (await import('/src/db.js')).db
+        const { importFile } = await import('/src/lib/importer.js')
+        const React = (await import('react')).default
+        const { createRoot } = await import('react-dom/client')
+        const P = await import('/src/lib/prefs.js')
+        const T = await import('/src/lib/txtText.js')
+        const S = await import('/src/lib/txtSel.js')
+        const useWakeLock = (await import('/src/hooks/useWakeLock.js')).default
+        const useImmersive = (await import('/src/hooks/useImmersive.js')).default
+        const usePinch = (await import('/src/hooks/usePinch.js')).default
+        const PdfReader = (await import('/src/components/PdfReader.jsx')).default
+        const TxtReader = (await import('/src/components/TxtReader.jsx')).default
+
+        await db.delete()
+        await db.open()
+        // prefs 在 localStorage，不跟着 IndexedDB 一起清 —— 必须显式清掉，
+        // 否则上一次跑留下的 readerSize 会让「初始字号」这条断言随机失败
+        window.localStorage.removeItem('book-reader:prefs')
+        log('db cleared, prefs reset')
+
+        /* ================= 1. 字号档位（§4.2） ================= */
+        assertEq('档位数量', P.READER_SIZES.length, 7)
+        assertEq('档位表', P.READER_SIZES.join(','), '15,16,18,20,22,24,28')
+        assertEq('默认字号在表内', P.READER_SIZES.includes(P.DEFAULT_PREFS.readerSize), true)
+        // 19 离 18 和 20 一样近 → 取先出现的那个（约定：持平取小）
+        assertEq('snap 持平取小', P.snapReaderSize(19), 18)
+        assertEq('snap 进位', P.snapReaderSize(19.2), 20)
+        assertEq('snap 双指放大后的连续值', P.snapReaderSize(18 * 2.6), 28)
+        assertEq('snap 下限', P.snapReaderSize(3), 15)
+        assertEq('snap 上限', P.snapReaderSize(999), 28)
+        assertEq('步进 +1', P.stepReaderSize(18, 1), 20)
+        assertEq('步进 -1', P.stepReaderSize(18, -1), 16)
+        assertEq('顶到头返回 null', P.stepReaderSize(28, 1), null)
+        assertEq('底到头返回 null', P.stepReaderSize(15, -1), null)
+        assertEq('常亮默认关', P.DEFAULT_PREFS.readerKeepAwake, false)
+
+        // 四张档位表都要和 DESIGN.md §4.2 对齐，且默认值必须落在表内
+        assertEq('行距档位', P.READER_LEADINGS.join(','), '1.5,1.7,1.9')
+        assertEq('段距档位', P.READER_PARA_GAPS.join(','), '0,0.5,1')
+        assertEq('页边距档位', P.READER_PADS.join(','), '16,24,40')
+        ok('默认字号在档位表内', P.READER_SIZES.includes(P.DEFAULT_PREFS.readerSize))
+        ok('默认行距在档位表内', P.READER_LEADINGS.includes(P.DEFAULT_PREFS.readerLeading))
+        ok('默认段距在档位表内', P.READER_PARA_GAPS.includes(P.DEFAULT_PREFS.readerParaGap))
+        ok('默认页边距在档位表内', P.READER_PADS.includes(P.DEFAULT_PREFS.readerPad))
+
+        // 老版本把滑杆写成连续区间，用户存过 1.62 / 50 这种值 —— 读回来必须吸附，
+        // 否则外观面板的 indexOf 取不到下标、滑杆会跳到最左边。
+        // 这里特意避开 1.6 这种正中间的值：浮点误差会让「持平」偏向哪边不确定，
+        // 断言一个数学上就唯一的答案
+        window.localStorage.setItem(
+          'book-reader:prefs',
+          JSON.stringify({ readerSize: 19, readerLeading: 1.62, readerParaGap: 0.7, readerPad: 50 })
+        )
+        const legacy = P.loadPrefs()
+        assertEq('旧字号被吸附', legacy.readerSize, 18)
+        assertEq('旧行距被吸附', legacy.readerLeading, 1.7)
+        assertEq('旧段距被吸附', legacy.readerParaGap, 0.5)
+        assertEq('旧页边距被吸附', legacy.readerPad, 40)
+        window.localStorage.removeItem('book-reader:prefs')
+
+        /* ================= 2. useWakeLock ================= */
+        const probeEl = document.getElementById('probe')
+
+        // 让 document.visibilityState 可控：无头环境里它可能是 hidden，
+        // 而 hook 明确依赖它决定「现在能不能申请」
+        let vis = 'visible'
+        Object.defineProperty(document, 'visibilityState', { get: () => vis, configurable: true })
+
+        let lockCalls = 0
+        let lockReleased = 0
+        let lockFail = false
+        let lastSentinel = null
+        const makeSentinel = () => {
+          const ls = {}
+          return {
+            addEventListener: (t, fn) => { (ls[t] || (ls[t] = [])).push(fn) },
+            release: async () => { lockReleased++ },
+            emit: (t) => (ls[t] || []).forEach((fn) => fn()),
+          }
+        }
+        Object.defineProperty(navigator, 'wakeLock', {
+          configurable: true,
+          value: {
+            request: async () => {
+              lockCalls++
+              if (lockFail) throw new Error('NotAllowedError')
+              lastSentinel = makeSentinel()
+              return lastSentinel
+            },
+          },
+        })
+
+        let wl = null
+        function WakeProbe() {
+          wl = useWakeLock(true)
+          return null
+        }
+        let wlRoot = createRoot(probeEl)
+        wlRoot.render(React.createElement(WakeProbe))
+        await until(() => lockCalls === 1, 3000)
+        assertEq('支持时上报 supported', wl?.supported, true)
+        assertEq('开启后申请了锁', lockCalls, 1)
+        assertEq('本地状态为开', wl?.on, true)
+
+        // 可见 → 不可见：不该重复申请
+        vis = 'hidden'
+        document.dispatchEvent(new Event('visibilitychange'))
+        await sleep(60)
+        assertEq('切到后台不重复申请', lockCalls, 1)
+
+        // 浏览器在后台会强制释放锁，并触发 release 事件 —— 必须模拟这一步，
+        // 否则测不到「回到前台重新申请」这条关键路径
+        lastSentinel.emit('release')
+        vis = 'visible'
+        document.dispatchEvent(new Event('visibilitychange'))
+        await until(() => lockCalls === 2, 3000)
+        assertEq('回到前台会重新申请（否则常亮悄悄失效）', lockCalls, 2)
+
+        // 还持有锁时不该重复申请
+        document.dispatchEvent(new Event('visibilitychange'))
+        await sleep(60)
+        assertEq('已持锁时不重复申请', lockCalls, 2)
+
+        wl.setOn(false)
+        await until(() => lockReleased === 1, 3000)
+        assertEq('关掉时释放锁', lockReleased, 1)
+        wlRoot.unmount()
+        await sleep(80)
+
+        // 申请被拒 → 静默降级，on 保持用户的选择，不抛错
+        lockFail = true
+        lockCalls = 0
+        let wl2 = null
+        function FailProbe() {
+          wl2 = useWakeLock(true)
+          return null
+        }
+        wlRoot = createRoot(probeEl)
+        wlRoot.render(React.createElement(FailProbe))
+        await until(() => lockCalls === 1, 3000)
+        await sleep(80)
+        assertEq('被拒后仍然尝试过申请', lockCalls, 1)
+        assertEq('被拒不改变用户开关', wl2?.on, true)
+        wlRoot.unmount()
+        await sleep(80)
+        lockFail = false
+
+        // 完全没有 Wake Lock API 时 supported 必须是 false（面板据此显示「此设备不支持」）
+        const savedWakeLock = navigator.wakeLock
+        Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: undefined })
+        let wl3 = null
+        function NoApiProbe() {
+          wl3 = useWakeLock(true)
+          return null
+        }
+        wlRoot = createRoot(probeEl)
+        wlRoot.render(React.createElement(NoApiProbe))
+        await sleep(120)
+        assertEq('没有 API 时 supported 为 false', wl3?.supported, false)
+        wlRoot.unmount()
+        await sleep(80)
+        Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: savedWakeLock })
+
+        /* ================= 3. useImmersive ================= */
+        let fsReq = 0
+        let fsExit = 0
+        let fsEl = null
+        document.documentElement.requestFullscreen = async () => {
+          fsReq++
+          fsEl = document.documentElement
+        }
+        document.exitFullscreen = async () => {
+          fsExit++
+          fsEl = null
+        }
+        Object.defineProperty(document, 'fullscreenElement', { get: () => fsEl, configurable: true })
+
+        let im = null
+        function ImmProbe() {
+          im = useImmersive()
+          return null
+        }
+        const imRoot = createRoot(probeEl)
+        imRoot.render(React.createElement(ImmProbe))
+        await until(() => im, 3000)
+        assertEq('初始未沉浸', im.on, false)
+        assertEq('识别到全屏 API', im.supported, true)
+
+        im.toggle()
+        await until(() => fsReq === 1, 3000)
+        await sleep(60)
+        assertEq('开沉浸调了 requestFullscreen', fsReq, 1)
+        assertEq('本地状态为开', im.on, true)
+        assertEq('真全屏状态由事件同步', im.realFs, false) // 还没派发 fullscreenchange
+
+        document.dispatchEvent(new Event('fullscreenchange'))
+        await sleep(60)
+        assertEq('fullscreenchange 后 realFs 为真', im.realFs, true)
+
+        // 关键路径：用户按 Esc / 系统手势退出全屏 —— 按钮状态必须跟着收回
+        fsEl = null
+        document.dispatchEvent(new Event('fullscreenchange'))
+        await sleep(60)
+        assertEq('系统退出全屏时沉浸状态自动收回', im.on, false)
+        assertEq('realFs 也归零', im.realFs, false)
+
+        im.toggle()
+        await until(() => fsReq === 2, 3000)
+        await sleep(40)
+        im.toggle()
+        await until(() => fsExit === 1, 3000)
+        assertEq('关沉浸调了 exitFullscreen', fsExit, 1)
+
+        // 还在全屏时离开阅读器 → 必须退出，否则书架留在全屏且没有退出入口
+        im.toggle()
+        await until(() => fsReq === 3, 3000)
+        await sleep(40)
+        imRoot.unmount()
+        await until(() => fsExit === 2, 3000)
+        assertEq('卸载时退出全屏', fsExit, 2)
+
+        /* ================= 4. usePinch 本身 ================= */
+        let pz = null
+        function PinchProbe() {
+          const box = React.useRef(null)
+          const fx = React.useRef(null)
+          const vRef = React.useRef(18)
+          const last = React.useRef(null)
+          const hits = React.useRef([])
+          const { shouldIgnoreSwipe } = usePinch({
+            targetRef: box,
+            feedbackRef: fx,
+            enabled: true,
+            getValue: () => vRef.current,
+            commit: (v) => {
+              vRef.current = v
+              last.current = v
+              hits.current.push(v)
+              return v
+            },
+            min: 8,
+            max: 60,
+          })
+          pz = { box, fx, vRef, last, hits, shouldIgnoreSwipe }
+          return React.createElement(
+            'div',
+            { ref: box, id: 'pz' },
+            React.createElement('div', { ref: fx, id: 'pzfx' })
+          )
+        }
+        const pzRoot = createRoot(probeEl)
+        pzRoot.render(React.createElement(PinchProbe))
+        await until(() => pz && pz.box.current, 3000)
+        const box = pz.box.current
+        const fx = pz.fx.current
+
+        {
+          log('合成触摸事件走 ' + (HAS_TOUCH_CTOR ? 'TouchEvent' : 'Event 降级'))
+          // 一根手指不能拦：拦了就没法长按划词
+          const eDown = fire(box, 'touchstart', [[100, 100]])
+          const eMove = fire(box, 'touchmove', [[100, 160]])
+          assertEq('单指 touchstart 不拦截', eDown.defaultPrevented, false)
+          assertEq('单指 touchmove 不拦截（划词要用）', eMove.defaultPrevented, false)
+          fire(box, 'touchend', [[100, 160]], [])
+          await sleep(30)
+          assertEq('单指不触发提交', pz.hits.current.length, 0)
+
+          // 双指开合 2 倍
+          const at = (d) => [[200, 300], [200 + d, 300]]
+          fire(box, 'touchstart', at(100))
+          const ePinchMove = fire(box, 'touchmove', at(200))
+          assertEq('双指 touchmove 被拦截（浏览器整页缩放要被压住）', ePinchMove.defaultPrevented, true)
+          assertEq('手势中做即时反馈', fx.style.transform, 'scale(2)')
+          assertEq('反馈原点按视口算（不是元素中心）', fx.style.transformOrigin.includes('px'), true)
+          fire(box, 'touchend', at(200), [])
+          await sleep(30)
+          assertEq('松手提交真实值 18×2', pz.last.current, 36)
+          assertEq('提交后清掉临时缩放', fx.style.transform, '')
+          assertEq('刚结束的手势要能被识别（避免被当成滑动翻页）', pz.shouldIgnoreSwipe(), true)
+
+          // 夹到上限
+          pz.vRef.current = 18
+          pz.hits.current.length = 0
+          pinch(box, 100, 1000)
+          await sleep(30)
+          assertEq('超上限被夹住', pz.last.current, 60)
+
+          // 缩到下限
+          pz.vRef.current = 18
+          pinch(box, 300, 30)
+          await sleep(30)
+          assertEq('超下限被夹住', pz.last.current, 8)
+
+          // 触控板捏合：ctrl+wheel
+          pz.vRef.current = 20
+          pz.hits.current.length = 0
+          const wNoCtrl = new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true })
+          box.dispatchEvent(wNoCtrl)
+          await sleep(30)
+          assertEq('普通滚轮不缩放', pz.hits.current.length, 0)
+          const wCtrl = new WheelEvent('wheel', { deltaY: -120, ctrlKey: true, bubbles: true, cancelable: true })
+          box.dispatchEvent(wCtrl)
+          await sleep(40)
+          assertEq('ctrl+wheel 被拦截', wCtrl.defaultPrevented, true)
+          assertEq('ctrl+wheel 改了值', pz.hits.current.length > 0, true)
+          ok('ctrl+wheel 向上滚是放大', pz.last.current > 20)
+        }
+        pzRoot.unmount()
+        await sleep(80)
+
+        /* ================= 5. TXT 阅读器集成 ================= */
+        const host = document.getElementById('host')
+        const makeRoot = () => createRoot(host)
+        const vp = () => host.querySelector('.txt-viewport')
+        const cols = () => host.querySelector('.txt-columns')
+        const btn = (text) =>
+          [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.includes(text))
+        const readNums = () => {
+          const el = host.querySelector('.scrub-num')
+          if (!el) return null
+          const m = el.textContent.match(/(\d+)\s*\/\s*(\d+)/)
+          return m ? { page: Number(m[1]), pages: Number(m[2]) } : null
+        }
+        const sizeVar = () =>
+          host.querySelector('.reader')
+            ? getComputedStyle(host.querySelector('.reader')).getPropertyValue('--reader-size').trim()
+            : null
+        const geo = () => ({
+          left: vp().getBoundingClientRect().left,
+          scrollLeft: vp().scrollLeft,
+          colW: cols().clientWidth,
+          gap: 40,
+        })
+        const segList = () => [...cols().children].map((el) => ({ start: Number(el.dataset.start) }))
+        const colOfOffset = (offset, list) => {
+          const i = T.segmentAt(list, offset)
+          return i < 0 ? null : S.columnAt(cols().children[i], geo())
+        }
+        const currentPage = () => Number(readNums().page) - 1
+        const firstVisibleStart = () => {
+          const page = currentPage()
+          for (const p of cols().children) if (S.columnAt(p, geo()) === page) return Number(p.dataset.start)
+          return null
+        }
+        const settle = async () => {
+          let last = -1
+          for (let i = 0; i < 40; i++) {
+            const v = Math.round(vp()?.scrollLeft || 0)
+            if (v === last) return v
+            last = v
+            await sleep(60)
+          }
+          return last
+        }
+
+        const txtBytes = await (await fetch('/@fs/D:/book-reader/samples/sample-utf8.txt')).arrayBuffer()
+        const txtBook = await importFile(new File([txtBytes], 'sample-utf8.txt', { type: 'text/plain' }))
+
+        let root = makeRoot()
+        root.render(React.createElement(TxtReader, { bookId: txtBook.id, title: 'sample', onBack() {} }))
+        ok('TXT 阅读器打开', await until(() => host.querySelector('.txt-p'), 8000))
+        await sleep(250)
+
+        // --- 桌面端行宽限制（DESIGN.md §4.2 / §11）---
+        const stageW = host.querySelector('.txt-stage').getBoundingClientRect().width
+        log(`host 720px → stage ${Math.round(stageW)}px, 视口 ${vp().clientWidth}px, 栏宽 ${cols().clientWidth}px`)
+        ok('大屏下正文被限宽（不会横跨整个窗口）', vp().clientWidth <= 34 * 18 + 1)
+        ok('限宽后一栏仍是 34em 左右', Math.abs(vp().clientWidth / 18 - 34) < 1.5)
+
+        // --- 双指放大 → 字号走档位 ---
+        assertEq('TXT 初始字号', sizeVar(), '18px')
+        // 先挪到「长章的中间一页」再缩放。停在章首的话，就算缩放把位置拽回
+        // 章首也看不出来 —— 这个测试就白做了
+        btn('面板').click()
+        await until(() => host.querySelector('.outline-item'), 3000)
+        ;[...host.querySelectorAll('.outline-item')].find((b) => b.textContent.includes('第十二章')).click()
+        await sleep(250)
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+        ok('已翻到章节中间（不是章首）', !!(await until(() => readNums()?.page === 2, 3000)))
+        await settle()
+        const anchorBefore = firstVisibleStart()
+        const segsNow = segList()
+        log(`放大前：第 ${currentPage() + 1} 页 / 共 ${readNums().pages} 页，锚点偏移 ${anchorBefore}`)
+
+        {
+          pinch(vp(), 100, 136) // 18 × 1.36 = 24.5 → 最近的档位是 24
+          await sleep(400)
+          assertEq('双指放大把字号吸到档位 24', sizeVar(), '24px')
+          assertEq('字号写回了 prefs', JSON.parse(localStorage.getItem('book-reader:prefs')).readerSize, 24)
+          assertEq(`放大后仍停在同一段文字（第 ${currentPage() + 1} 页）`, colOfOffset(anchorBefore, segsNow), currentPage())
+          ok('位置没被拽到章首', currentPage() > 0)
+
+          // --- 双指缩小 ---
+          pinch(vp(), 200, 100) // 24 × 0.5 = 12 → 最近的档位 15（下限）
+          await sleep(400)
+          assertEq('双指缩小到下限档 15', sizeVar(), '15px')
+          // 缩小后栏宽变窄、页数变多，锚点段落可能落进更靠前的那一栏 ——
+          // 这时「页面顶部」自然是它前面那段文字。判定标准不变：
+          // **锚点段落必须落在当前显示的那一栏里**（人是跟着这段文字走的）
+          assertEq(
+            `缩小后锚点段落仍在当前栏（第 ${currentPage() + 1} 页 / 共 ${readNums().pages} 页）`,
+            colOfOffset(anchorBefore, segsNow),
+            currentPage()
+          )
+
+          // --- 再放大回上限档 ---
+          const anchorMid = firstVisibleStart()
+          pinch(vp(), 100, 187) // 15 × 1.87 ≈ 28 → 上限档
+          await sleep(400)
+          assertEq('再放大到上限档 28', sizeVar(), '28px')
+          assertEq('放大后锚点段落仍在当前栏', colOfOffset(anchorMid, segsNow), currentPage())
+
+          // --- 双指整体平移不能被当成滑动翻页 ---
+          // 指距保持 200 不变（不触发缩放），但两指一起左移 100px ——
+          // changedTouches[0] 的位移远超 50px，没有 shouldIgnoreSwipe 的话
+          // 就会被判成「向左滑，上一页」
+          const pageBeforeSlide = currentPage()
+          const twoAt = (x) => [
+            [x, 300],
+            [x + 200, 300],
+          ]
+          fire(vp(), 'touchstart', twoAt(220))
+          fire(vp(), 'touchmove', twoAt(120))
+          fire(vp(), 'touchend', twoAt(120), [])
+          await sleep(350)
+          assertEq('双指平移没有被误判成翻页', currentPage(), pageBeforeSlide)
+          assertEq('（同时确认那一下确实移动了 100px）', Math.abs(120 - 220), 100)
+        }
+
+        /* ================= 6. 显示面板：常亮 / 沉浸 / 外观 ================= */
+        const prevLockCalls = lockCalls
+        btn('⋯').click()
+        ok('⋯ 打开了显示面板', await until(() => document.querySelector('.display-menu'), 3000))
+        const rows = [...document.querySelectorAll('.display-menu .display-row')]
+        assertEq('面板里有 3 行', rows.length, 3)
+        assertEq('第一行是常亮', rows[0].textContent.includes('阅读时常亮'), true)
+        assertEq('第二行是沉浸', rows[1].textContent.includes('全屏沉浸'), true)
+        assertEq('第三行是外观设置', rows[2].textContent.includes('外观设置'), true)
+        assertEq('开关有 aria-checked', rows[0].getAttribute('aria-checked'), 'false')
+
+        // 常亮
+        rows[0].click()
+        await until(() => lockCalls > prevLockCalls, 3000)
+        assertEq('打开常亮后申请了锁', lockCalls > prevLockCalls, true)
+        assertEq('常亮偏好已持久化', JSON.parse(localStorage.getItem('book-reader:prefs')).readerKeepAwake, true)
+        await sleep(80)
+        assertEq(
+          '开关视觉状态已更新',
+          document.querySelectorAll('.display-menu .display-row')[0].querySelector('.switch').className.includes('on'),
+          true
+        )
+        document.querySelectorAll('.display-menu .display-row')[0].click()
+        await sleep(120)
+        assertEq('再点一次关掉', JSON.parse(localStorage.getItem('book-reader:prefs')).readerKeepAwake, false)
+
+        // 沉浸：UI 层 + 真全屏层
+        const prevFs = fsReq
+        document.querySelectorAll('.display-menu .display-row')[1].click()
+        await until(() => fsReq > prevFs, 3000)
+        await sleep(120)
+        assertEq('沉浸加了 .immersive', !!host.querySelector('.reader.immersive'), true)
+        assertEq('沉浸调了 requestFullscreen', fsReq > prevFs, true)
+        assertEq(
+          '沉浸藏掉进度条',
+          getComputedStyle(host.querySelector('.reader-bottom')).display,
+          'none'
+        )
+        assertEq(
+          '沉浸把工具栏也收了',
+          host.querySelector('.reader-top').className.includes('hidden'),
+          true
+        )
+        // 点中间区能临时唤出工具栏（否则用户找不到出口）。
+        // 必须点正中间 —— 左右 1/3 是翻页区，点那里会翻页而不是唤出工具栏
+        {
+          const r = vp().getBoundingClientRect()
+          vp().dispatchEvent(
+            new MouseEvent('click', {
+              bubbles: true,
+              clientX: r.left + r.width / 2,
+              clientY: r.top + r.height / 2,
+            })
+          )
+        }
+        await sleep(150)
+        assertEq(
+          '点中间区可唤出工具栏',
+          host.querySelector('.reader-top').className.includes('hidden'),
+          false
+        )
+
+        // 外观设置入口（面板这时还开着，直接点第三行）
+        await until(() => document.querySelector('.display-menu'), 2000)
+        document.querySelectorAll('.display-menu .display-row')[2].click()
+        ok('从面板进入外观设置', await until(() => document.querySelector('.appearance-preview'), 3000))
+        ;[...document.querySelectorAll('.modal .btn')].find((b) => b.textContent.includes('关闭')).click()
+        await sleep(150)
+        assertEq('外观设置打开后显示面板已收起', document.querySelectorAll('.display-menu').length, 0)
+
+        // 退出沉浸
+        btn('⋯').click()
+        await until(() => document.querySelector('.display-menu'), 2000)
+        const prevFs2 = fsExit
+        document.querySelectorAll('.display-menu .display-row')[1].click()
+        await until(() => fsExit > prevFs2, 3000)
+        await sleep(150)
+        assertEq('退出沉浸后 .immersive 消失', !!host.querySelector('.reader.immersive'), false)
+        assertEq('退出沉浸调了 exitFullscreen', fsExit > prevFs2, true)
+        assertEq('退出沉浸后进度条回来', getComputedStyle(host.querySelector('.reader-bottom')).display !== 'none', true)
+
+        root.unmount()
+        await sleep(150)
+
+        /* ================= 7. PDF 阅读器集成 ================= */
+        const pdfBytes = await (await fetch('/@fs/D:/book-reader/samples/sample.pdf')).arrayBuffer()
+        const pdfBook = await importFile(new File([pdfBytes], 'sample.pdf', { type: 'application/pdf' }))
+
+        root = makeRoot()
+        root.render(React.createElement(PdfReader, { bookId: pdfBook.id, title: 'sample', onBack() {} }))
+        ok('PDF 阅读器打开', await until(() => readNums(), 15000))
+        await sleep(300)
+
+        const zoomLabel = () => btn('%')?.textContent.trim()
+        assertEq('初始缩放 100%', zoomLabel(), '100%')
+        assertEq('工具栏里有 ⋯', !!btn('⋯'), true)
+        assertEq(
+          '± 标了 toolbar-optional（窄屏收起，双指接管）',
+          [...host.querySelectorAll('.reader-top .btn.toolbar-optional')].length,
+          2
+        )
+
+        {
+          const pagesEl = host.querySelector('.pages')
+          const viewEl = host.querySelector('.reader-view')
+          fire(viewEl, 'touchstart', [[300, 300], [400, 300]])
+          const evM = fire(viewEl, 'touchmove', [[300, 300], [450, 300]])
+          assertEq('PDF 双指 move 被拦截', evM.defaultPrevented, true)
+          assertEq('PDF 手势中有即时缩放', pagesEl.style.transform, 'scale(1.5)')
+          fire(viewEl, 'touchend', [[300, 300], [450, 300]], [])
+          await until(() => zoomLabel() === '150%', 4000)
+          assertEq('松手提交 150%', zoomLabel(), '150%')
+          await sleep(200)
+          assertEq('提交后清掉临时缩放', pagesEl.style.transform, '')
+
+          // 缩放后页码不该飞走
+          await until(() => readNums()?.page === 1, 3000)
+          assertEq('缩放后仍在第 1 页', readNums()?.page, 1)
+        }
+
+        // PDF 的显示面板：常亮 / 沉浸 / 主题（没有外观设置，版式书字号无意义）
+        btn('⋯').click()
+        ok('PDF ⋯ 打开显示面板', await until(() => document.querySelector('.display-menu'), 3000))
+        const prows = () => [...document.querySelectorAll('.display-menu .display-row')]
+        assertEq('PDF 面板 3 行', prows().length, 3)
+        assertEq('PDF 第一行是常亮', prows()[0].textContent.includes('阅读时常亮'), true)
+        assertEq('PDF 第三行是主题', prows()[2].textContent.includes('阅读主题'), true)
+        assertEq(
+          '主题行右值就是当前主题名',
+          Object.values(P.THEME_LABELS).some((l) => prows()[2].textContent.includes(l)),
+          true
+        )
+
+        const themeBefore = host.querySelector('.reader').dataset.readerTheme
+        prows()[2].click()
+        await sleep(200)
+        const themeAfter = host.querySelector('.reader').dataset.readerTheme
+        ok(`点主题行即切换（${themeBefore} → ${themeAfter}）`, themeAfter !== themeBefore)
+        assertEq('PDF 主题也写回 localStorage', JSON.parse(localStorage.getItem('book-reader:prefs')).readerTheme, themeAfter)
+        assertEq('主题行右值跟着更新', prows()[2].textContent.includes(P.THEME_LABELS[themeAfter]), true)
+        assertEq(
+          'PDF 有主题色块按钮（和面板里的选择是同一个值）',
+          host.querySelector('.reader-top .theme-dot')?.dataset.theme,
+          themeAfter
+        )
+
+        document.querySelector('.modal-mask').click()
+        await sleep(150)
+        assertEq('点遮罩关闭面板', document.querySelectorAll('.display-menu').length, 0)
+
+        // 沉浸：PDF 这边也要能用，而且退出后工具栏/进度条要回来
+        const prevFsP = fsReq
+        btn('⋯').click()
+        await until(() => document.querySelector('.display-menu'), 2000)
+        prows()[1].click()
+        await until(() => fsReq > prevFsP, 3000)
+        await sleep(150)
+        assertEq('PDF 沉浸生效', !!host.querySelector('.reader.immersive'), true)
+        assertEq('PDF 沉浸藏掉进度条', getComputedStyle(host.querySelector('.reader-bottom')).display, 'none')
+
+        prows()[1].click()
+        await sleep(200)
+        assertEq('PDF 退出沉浸', !!host.querySelector('.reader.immersive'), false)
+        assertEq('PDF 退出沉浸后进度条回来', getComputedStyle(host.querySelector('.reader-bottom')).display !== 'none', true)
+
+        // 面板开着时方向键不该翻页
+        const pageBeforeKeys = readNums()?.page
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+        await sleep(200)
+        assertEq('显示面板开着时方向键不翻页', readNums()?.page, pageBeforeKeys)
+        document.querySelector('.modal-mask').click()
+        await sleep(150)
+
+        root.unmount()
+
+        dump()
+        log(failed ? 'RESULT: FAIL (' + failed + ' 条断言未过)' : 'RESULT: PASS')
+        log('ALL DONE')
+      } catch (e) {
+        log('THROWN: ' + (e && e.message ? e.message : e))
+        log('stack: ' + (e && e.stack ? String(e.stack).split('\n').slice(0, 4).join(' | ') : ''))
+        dump()
+        log('ALL DONE')
+      }
+    </script>
+  </body>
+</html>

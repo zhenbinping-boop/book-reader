@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import Shelf from './components/Shelf'
 import PdfReader from './components/PdfReader'
+import TxtReader from './components/TxtReader'
+import EpubReader from './components/EpubReader'
 import BackupPanel from './components/BackupPanel'
 import { listBooks, deleteBook, getBook } from './db'
-import { importPdf } from './lib/importer'
+import { importFile } from './lib/importer'
 import { backfillHashes } from './lib/backup'
 import { useHashRoute, goShelf } from './hooks/useHashRoute'
 
@@ -22,7 +24,7 @@ export default function App() {
   useEffect(refresh, [refresh])
 
   // v2 之前导入的书还没有内容指纹，这里补算一次（只读本地 blob，不联网）。
-  // 补上之后，备份恢复和「重新导入同一个 PDF」才能把笔记对回书上。
+  // 补上之后，备份恢复和「重新导入同一个文件」才能把笔记对回书上。
   useEffect(() => {
     let alive = true
     backfillHashes()
@@ -55,14 +57,18 @@ export default function App() {
     const notes = []
     for (const file of files) {
       try {
-        const r = await importPdf(file)
+        const r = await importFile(file)
         if (r.status === 'linked') {
           notes.push(`《${r.title}》的文件已接回，原有笔记和进度都还在`)
         } else if (r.status === 'duplicate') {
           notes.push(`《${r.title}》已经在书架里了，没有重复导入`)
+        } else if (r.format === 'epub' && r.chapters) {
+          notes.push(`《${r.title}》已导入：${r.chapters} 节${r.author ? ` · ${r.author}` : ''}`)
+        } else if (r.format === 'txt' && r.chapters) {
+          notes.push(`《${r.title}》已导入：${r.chapters} 章，编码识别为 ${r.encoding}`)
         }
       } catch (err) {
-        window.alert(`导入失败：${file.name}\n${err?.message || '无法解析这个 PDF'}`)
+        window.alert(`导入失败：${file.name}\n${err?.message || '无法解析这个文件'}`)
       }
       setBusy((n) => n - 1)
     }
@@ -97,7 +103,7 @@ export default function App() {
           <div className="missing-file">
             <div className="missing-file-title">《{book.title}》的原文件不在本设备上</div>
             <div className="missing-file-note">
-              笔记和阅读进度都还留着。回到书架重新导入同一个 PDF，
+              笔记和阅读进度都还留着。回到书架重新导入同一个文件，
               系统会按内容自动识别并接上，笔记不会丢。
             </div>
             <button className="btn btn-primary" onClick={goShelf}>
@@ -107,7 +113,8 @@ export default function App() {
         </div>
       )
     }
-    return <PdfReader key={book.id} bookId={book.id} title={book.title} onBack={goShelf} />
+    const Reader = book.format === 'txt' ? TxtReader : book.format === 'epub' ? EpubReader : PdfReader
+    return <Reader key={book.id} bookId={book.id} title={book.title} onBack={goShelf} />
   }
 
   return (

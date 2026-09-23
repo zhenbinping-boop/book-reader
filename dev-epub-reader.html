@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>EPUB reader test</title>
+    <style>
+      body { font: 12px/1.5 monospace; padding: 12px; margin: 0; }
+      /* 故意开得又窄又矮：一章要跨好几栏，分页 / 锚点 / 翻页这些事才测得出真假。
+         320px 宽 → 一栏约 15 字，280px 高 → 一栏约 6 行。 */
+      #host { width: 320px; height: 280px; position: relative; border: 1px solid #888; }
+      #log { position: fixed; right: 0; top: 0; width: 520px; height: 100vh; background: #fff; z-index: 99999; padding: 10px; overflow: auto; border-left: 1px solid #ccc; }
+    </style>
+  </head>
+  <body>
+    <div id="host"></div>
+    <div id="log"></div>
+    <script>
+      window.__errs = []
+      window.addEventListener('error', (e) => {
+        window.__errs.push('WINDOW ERROR: ' + (e.message || e.error) + ' @ ' + (e.filename || '') + ':' + (e.lineno || ''))
+      })
+      window.addEventListener('unhandledrejection', (e) =>
+        window.__errs.push('REJECTION: ' + (e.reason && e.reason.message ? e.reason.message : e.reason))
+      )
+    </script>
+    <script type="module">
+      import '/src/styles.css'
+
+      const ENDPOINT = 'http://127.0.0.1:5178/log'
+      const IN_TARGET = location.pathname.endsWith('dev-epub-reader.html')
+      const log = (m) => {
+        document.getElementById('log').innerHTML += `<div>${m}</div>`
+        if (IN_TARGET) { try { fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true }) } catch {} }
+      }
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+      const dump = () => window.__errs.forEach((e) => log(e))
+      let failed = 0
+      const assertEq = (label, got, want) => {
+        const pass = got === want
+        if (!pass) failed++
+        log(`${pass ? 'ok  ' : 'BAD '}${label}: ${JSON.stringify(got)}` + (pass ? '' : ' (want ' + JSON.stringify(want) + ')'))
+      }
+      const ok = (label, cond) => {
+        if (!cond) failed++
+        log(`${cond ? 'ok  ' : 'BAD '}${label}`)
+      }
+      const until = async (fn, ms = 5000, step = 50) => {
+        const t0 = Date.now()
+        for (;;) {
+          const v = fn()
+          if (v) return v
+          if (Date.now() - t0 > ms) return null
+          await sleep(step)
+        }
+      }
+
+      try {
+        log('boot')
+
+        const S = await import('/src/lib/txtSel.js')
+        const E = await import('/src/lib/epub.js')
+        const D = await import('/src/lib/epubDom.js')
+        const { db, listHighlights } = await import('/src/db.js')
+        const { importFile } = await import('/src/lib/importer.js')
+        const React = (await import('react')).default
+        const { createRoot } = await import('react-dom/client')
+        const EpubReader = (await import('/src/components/EpubReader.jsx')).default
+
+        await db.delete()
+        await db.open()
+        log('db cleared')
+
+        const bytes = new Uint8Array(await (await fetch('/@fs/D:/book-reader/samples/sample.epub')).arrayBuffer())
+        const asFile = () => new File([bytes], 'sample.epub', { type: 'application/epub+zip' })
+        log(`sample.epub ${bytes.length}B`)
+
+        /* ---------- 1. 导入 ---------- */
+        const r1 = await importFile(asFile())
+        assertEq('导入状态', r1.status, 'added')
+        assertEq('识别格式', r1.format, 'epub')
+        assertEq('节数', r1.chapters, 5)
+        assertEq('作者', r1.author, '测试作者')
+        const id = r1.id
+
+        const rec = await db.books.get(id)
+        assertEq('books.format', rec.format, 'epub')
+        assertEq('pageCount 记的是节数', rec.pageCount, 5)
+        assertEq('作者落库', rec.author, '测试作者')
+        assertEq('书名取自 dc:title', rec.title, '样例电子书')
+        ok('封面缩略图已生成', typeof rec.cover === 'string' && rec.cover.startsWith('data:image/'))
+        ok('指纹已写入', typeof rec.fileHash === 'string' && rec.fileHash.length > 10)
+        ok('blob 已落盘', !!(await db.blobs.get(id)))
+
+        const r2 = await importFile(new File([bytes], 'again.epub', { type: 'application/epub+zip' }))
+        assertEq('同一文件重复导入被拦下', r2.status, 'duplicate')
+        assertEq('书架不会多出一本', await db.books.count(), 1)
+
+        // 供断言用的「标准答案」：直接用同一套解析器算出每一章的段落
+        const oracle = await E.openEpub(bytes.slice())
+        assertEq('对照：节数', oracle.chapters.length, 5)
+        const built = []
+        for (const ch of oracle.chapters) {
+          const html = await E.readChapter(oracle, ch.index)
+          built.push(html ? await D.buildChapter({ html, chapterPath: ch.path }) : { segs: [], ids: new Map(), text: '' })
+        }
+        assertEq('对照：第 1 节 4 段', built[0].segs.length, 4)
+        assertEq('对照：第 2 节 9 段', built[1].segs.length, 9)
+        assertEq('对照：第 4 节 3 段', built[3].segs.length, 3)
+
+        /* ---------- 2. 挂载阅读器 ---------- */
+        const host = document.getElementById('host')
+        let backCount = 0
+        // React 19：unmount 过的 root 不能再 render，重挂必须新建一个
+        const makeRoot = () => {
+          const r = createRoot(host)
+          r.render(React.createElement(EpubReader, { bookId: id, title: 'sample', onBack: () => { backCount++ } }))
+          return r
+        }
+        let root = makeRoot()
+
+        const vp = () => host.querySelector('.txt-viewport')
+        const cols = () => host.querySelector('.txt-columns')
+        const geos = () => {
+          const el = vp()
+          const cs = cols()
+          return { left: el.getBoundingClientRect().left, scrollLeft: el.scrollLeft, colW: cs.clientWidth, gap: 40 }
+        }
+        const segEls = () => [...host.querySelectorAll('.txt-p')]
+        const readPageLabel = () => {
+          const el = host.querySelector('.scrub-num')
+          if (!el) return null
+          const m = el.textContent.match(/(\d+)\s*\/\s*(\d+)/)
+          return m ? { page: Number(m[1]), pages: Number(m[2]) } : null
+        }
+        const currentPage = () => Number(readPageLabel().page) - 1
+        const colOfSeg = (i) => S.columnAt(segEls()[i], geos())
+        const topSegIndex = () => {
+          const p = currentPage()
+          const list = segEls()
+          for (let i = 0; i < list.length; i++) if (S.columnAt(list[i], geos()) === p) return i
+          return -1
+        }
+        const chapLabel = () => host.querySelector('.scrub-chap').textContent.trim()
+        const headSub = () => host.querySelector('.txt-head-sub').textContent.replace(/\s/g, '')
+        const btn = (t) => [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.includes(t))
+        const setNativeValue = (el, v) => {
+          const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+          set.call(el, String(v))
+          el.dispatchEvent(new Event('input', { bubbles: true }))
+        }
+        const openPanel = async () => {
+          btn('面板').click()
+          return until(() => host.querySelector('.drawer'))
+        }
+        const closePanel = () => {
+          const c = [...host.querySelectorAll('.drawer .btn')].find((b) => b.textContent.trim() === '关闭')
+          if (c) c.click()
+        }
+        const pickTab = async (label) => {
+          const t = [...host.querySelectorAll('.drawer .tab')].find((b) => b.textContent.includes(label))
+          if (!t) return false
+          t.click()
+          await sleep(80)
+          return true
+        }
+        const outlineItems = () => [...host.querySelectorAll('.outline-item')]
+        const outlineItem = (text) => outlineItems().find((b) => b.textContent.includes(text))
+        /** 等到「当前顶栏是第 c 节、DOM 里是第 segs.length 段」 */
+        const waitChapter = (c, n) =>
+          until(() => (chapLabel() === `第 ${c}/5 节` && segEls().length === n ? true : null), 6000)
+
+        const firstP = await until(() => host.querySelector('.txt-p'), 8000)
+        ok('阅读器挂载并渲染出正文', !!firstP)
+        if (!firstP) throw new Error('阅读器没渲染出来')
+        assertEq('挂载的是 EPUB 阅读器', host.querySelector('.reader').className.includes('epub-reader'), true)
+        assertEq('第 1 节 4 段', segEls().length, 4)
+        assertEq('首段是标题', Number(segEls()[0].dataset.start), 0)
+        assertEq('首段用标题样式', segEls()[0].className.includes('txt-p-title'), true)
+        assertEq('顶栏节标题', host.querySelector('.txt-head-title').textContent, '第一章 晨读')
+        assertEq('顶栏节序号与进度', headSub(), '第1/5节·20%')
+
+        /* ---------- 3. 分栏分页 ---------- */
+        btn('下一节').click()
+        ok('切到第 2 节', await waitChapter(2, 9))
+        assertEq('第 2 节首段偏移为 0', Number(segEls()[0].dataset.start), 0)
+        assertEq('底栏节序号', chapLabel(), '第 2/5 节')
+        assertEq('换节后回到第 1 页', currentPage(), 0)
+
+        const p1 = readPageLabel()
+        log(`第 2 节分页：${p1.pages} 页`)
+        ok('分栏分页生效（本章至少 2 页）', p1.pages >= 2)
+        ok('多栏确实横向溢出', cols().scrollWidth > vp().clientWidth + 40)
+
+        const rc = vp().getBoundingClientRect()
+        vp().dispatchEvent(new MouseEvent('click', { clientX: rc.right - 10, clientY: rc.top + 30, bubbles: true }))
+        ok('点右侧翻到下一页', await until(() => (currentPage() === 1 ? true : null), 2500))
+        vp().dispatchEvent(new MouseEvent('click', { clientX: rc.left + 10, clientY: rc.top + 30, bubbles: true }))
+        ok('点左侧回上一页', await until(() => (currentPage() === 0 ? true : null), 2500))
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+        ok('方向键翻页生效', await until(() => (currentPage() === 1 ? true : null), 2500))
+
+        // 滑杆跳页（同时也是「位置锚点跟着走」的前置）
+        setNativeValue(host.querySelector('.reader-bottom input[type=range]'), 1)
+        ok('底部滑杆能跳回第 1 页', await until(() => (currentPage() === 0 ? true : null), 2500))
+
+        /* ---------- 4. 目录：跳节 + 锚点深链 ---------- */
+        ok('打开阅读面板', !!(await openPanel()))
+        const items = await until(() => (outlineItems().length >= 5 ? outlineItems() : null))
+        ok('目录列出目录项', !!items)
+        // 顶层 5 条 + 嵌套在「第二章」下面的 1 条子目录
+        assertEq('目录项总数', items.length, 6)
+        assertEq('其中顶层 5 条', items.filter((b) => b.style.paddingLeft === '16px').length, 5)
+        assertEq('嵌套子项 1 条', items.filter((b) => b.style.paddingLeft === '30px').length, 1)
+        assertEq('目录首条标题', items[0].textContent.replace(/^\d+/, '').trim(), '第一章 晨读')
+        ok('目录里有嵌套的「书桌的一角」', !!outlineItem('书桌的一角'))
+        // 当前第 2 节：父条目和它下面的子条目都指向 pageIndex 1，两条都算「当前位置」
+        ok('当前节在目录里高亮', outlineItem('第二章 茶与书桌').className.includes('active'))
+
+        // 跳到第 4 节（非深链，纯跳章）
+        outlineItem('第四章 归途').click()
+        ok('点目录跳到第 4 节', await waitChapter(4, 3))
+        assertEq('跳章后回到第 1 页', currentPage(), 0)
+        assertEq('跳章会收起面板', host.querySelector('.drawer'), null)
+        await openPanel()
+        ok('第 4 节目录条目已激活', outlineItem('第四章 归途').className.includes('active'))
+
+        // 深链：目录里带 #part2 的子条目，跳到第 2 节的「书桌的一角」那一段
+        const deep = await until(() => outlineItem('书桌的一角'))
+        ok('找到带锚点的子目录项', !!deep)
+        deep.click()
+        ok('深链跳到第 2 节', await waitChapter(2, 9))
+        {
+          // 目标段（id=part2 归属的那一段）必须落在当前显示的那一栏
+          const target = built[1].ids.get('part2')
+          assertEq('part2 归属第 6 段', target, 5)
+          const col = colOfSeg(target)
+          const top = topSegIndex()
+          log(`深链落点：第 ${col + 1} 栏，当前第 ${currentPage() + 1} 页，顶段序号 ${top}`)
+          assertEq('深链目标段就在当前页', col, currentPage())
+          // 锚点是「落到包含它的那一栏」，所以栏首可能是它前面那几段（这里是 3），
+          // 但绝不能冲过头 —— 栏首段序号必须 <= 锚点段序号
+          ok('深链没有冲过头（本栏不是从锚点之后才开始）', top >= 0 && top <= target)
+          const vr = vp().getBoundingClientRect()
+          const tr = segEls()[target].getBoundingClientRect()
+          ok('深链目标段确实落在当前可视栏内', tr.left < vr.right - 1 && tr.right > vr.left + 1)
+          ok('深链确实移动了（不是停在第 1 页）', col > 0)
+        }
+
+        /* ---------- 5. 书内链接（跨文件 + 同文件内链） ---------- */
+        // 第 2 节内部有一条指向本章 #par3 的链接，点击应该就地滚过去
+        {
+          setNativeValue(host.querySelector('.reader-bottom input[type=range]'), 1)
+          await until(() => (currentPage() === 0 ? true : null), 2500)
+          const link = host.querySelector('[data-frag]')
+          ok('第 2 节里渲染出了内链', !!link)
+          assertEq('内链不写成 <a href="#...">（那会改 hash 把人踢出阅读器）', link.tagName, 'SPAN')
+          assertEq('内链带的是片段名', link.getAttribute('data-frag'), '#par3')
+          link.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+          const col = await until(() => (colOfSeg(6) === currentPage() ? currentPage() : null), 3000)
+          ok('同文件内链：跳到 #par3 所在栏', col !== null)
+          assertEq('内链后仍在第 2 节', chapLabel(), '第 2/5 节')
+        }
+
+        // 第 4 节里有一条跨文件链接 ch2.xhtml#par3
+        await openPanel()
+        outlineItem('第四章 归途').click()
+        ok('回到第 4 节', await waitChapter(4, 3))
+        const cross = host.querySelector('[data-frag]')
+        ok('第 4 节里渲染出了跨文件内链', !!cross)
+        assertEq('跨文件内链的片段', cross.getAttribute('data-frag'), 'ch2.xhtml#par3')
+        cross.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        ok('跨文件内链：换到第 2 节', await waitChapter(2, 9))
+        ok('跨文件内链：落在 #par3 那一栏', await until(() => (colOfSeg(6) === currentPage() ? true : null), 3000))
+
+        /* ---------- 6. 位置后退栈 ---------- */
+        {
+          const backBtn = () => [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '↩')
+          ok('跳转过后出现「↩」按钮', !!backBtn())
+          backBtn().click()
+          ok('「↩」把位置退回跳转前的第 4 节', await until(() => (chapLabel() === '第 4/5 节' ? true : null), 4000))
+          ok('退回后给了提示', (host.querySelector('.toast')?.textContent || '').includes('已回到第 4 节'))
+          await sleep(80)
+
+          // 翻页**不该**进栈：这里翻一下再按 ↩，退到的必须是栈里那条「跳转」记录（第 2 节），
+          // 而不是「上一页 / 上一节」。翻页若入栈，这一步会退成第 4 节或第 5 节。
+          const r2 = vp().getBoundingClientRect()
+          vp().dispatchEvent(new MouseEvent('click', { clientX: r2.right - 10, clientY: r2.top + 30, bubbles: true }))
+          await sleep(300)
+          ok('翻页后「↩」还在', !!backBtn())
+          backBtn().click()
+          const jumped = await until(() => (chapLabel() === '第 2/5 节' ? true : null), 4000)
+          ok('翻页没进栈：↩ 退到的是「跳转到第 4 节」之前的位置（第 2 节）', !!jumped)
+        }
+
+        /* ---------- 7. 划词高亮（位置模型与 PDF/TXT 同形） ---------- */
+        let markText = ''
+        {
+          await openPanel()
+          outlineItem('第二章 茶与书桌').click()
+          ok('回到第 2 节准备划词', await waitChapter(2, 9))
+          setNativeValue(host.querySelector('.reader-bottom input[type=range]'), 1)
+          await until(() => (currentPage() === 0 ? true : null), 2500)
+
+          const segEl = segEls()[1]
+          const segStart = Number(segEl.dataset.start)
+          const node = segEl.firstChild
+          const range = document.createRange()
+          range.setStart(node, 2)
+          range.setEnd(node, 10)
+          const sel = window.getSelection()
+          sel.removeAllRanges()
+          sel.addRange(range)
+
+          const picked = S.selectionOffsets(cols())
+          ok('选中内容被识别', !!picked)
+          assertEq('选中文字正确', picked.text, segEl.textContent.slice(2, 10))
+          assertEq('选区起点 = 段起 + 2（章内偏移）', picked.from, segStart + 2)
+          assertEq('选区终点 = 段起 + 10', picked.to, segStart + 10)
+          markText = picked.text
+
+          // 触发阅读器的划词气泡（pointerup 后 60ms 自己会开）
+          document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+          const pop = await until(() => host.querySelector('.popover'), 3000)
+          ok('划词后弹出高亮气泡', !!pop)
+          const sws = host.querySelectorAll('.popover .sw')
+          assertEq('气泡里 4 个颜色', sws.length, 4)
+          ok('是「新建」形态（带复制按钮，没有删除）', !!host.querySelector('.popover .pop-btn:not(.danger)'))
+          const blueSw = [...sws].find((b) => b.getAttribute('data-color') === 'blue')
+          ok('有蓝色按钮', !!blueSw)
+          blueSw.click()
+
+          const mark = await until(() => host.querySelector('mark[data-hl]'), 3000)
+          ok('高亮已回填到正文', !!mark)
+          if (mark) {
+            assertEq('高亮的文字就是选中的文字', mark.textContent, markText)
+            assertEq('回填不改动段文本（偏移才不会漂）', mark.parentElement.textContent, segEls()[1].textContent)
+          }
+          const marks = await listHighlights(id)
+          assertEq('高亮落库 1 条', marks.length, 1)
+          assertEq('高亮记的是节序号（page = 章序号）', marks[0].page, 1)
+          assertEq('起点 = 章内字符偏移', marks[0].start.offset, segStart + 2)
+          assertEq('终点 = 章内字符偏移', marks[0].end.offset, segStart + 10)
+          assertEq('颜色', marks[0].color, 'blue')
+          assertEq('冗余存了一份文本供笔记列表用', marks[0].text, markText)
+          sel.removeAllRanges()
+        }
+
+        // 切走再切回：高亮要按 page 重新贴回来
+        await openPanel()
+        outlineItem('第四章 归途').click()
+        ok('切到第 4 节', await waitChapter(4, 3))
+        assertEq('别的节不该有这条高亮', host.querySelectorAll('mark[data-hl]').length, 0)
+        await openPanel()
+        outlineItem('第二章 茶与书桌').click()
+        ok('切回第 2 节', await waitChapter(2, 9))
+        {
+          const mark = await until(() => host.querySelector('mark[data-hl]'), 3000)
+          ok('切回后高亮还在', !!mark)
+          assertEq('切回后高亮位置没漂', mark?.textContent || '', markText)
+        }
+        // 笔记列表里也应该看得到
+        await openPanel()
+        await pickTab('笔记')
+        const noteItems = await until(() => {
+          const n = host.querySelectorAll('.note-item')
+          return n.length === 1 ? n : null
+        })
+        ok('笔记列表里有这条高亮', !!noteItems)
+        if (noteItems) {
+          assertEq('笔记的页标是「第N节」', noteItems[0].querySelector('.note-pg').textContent, '第2节')
+          assertEq('笔记文本', noteItems[0].querySelector('.note-text').textContent, markText)
+        }
+        closePanel()
+        await sleep(80)
+
+        /* ---------- 8. 全文搜索 ---------- */
+        {
+          await openPanel()
+          ok('切到搜索页签', await pickTab('搜索'))
+          setNativeValue(host.querySelector('.search-input'), '松了一口气')
+          const hits = await until(() => {
+            const h = host.querySelectorAll('.hit-item')
+            return h.length ? h : null
+          }, 8000)
+          ok('搜到「松了一口气」', !!hits)
+          assertEq('命中条数', hits.length, 1)
+          assertEq('命中标在第 2 节', hits[0].querySelector('.hit-pg').textContent, '第2节')
+          ok('命中带片段', hits[0].querySelector('.hit-text').textContent.includes('松了一口气'))
+          hits[0].click()
+          ok('点命中跳回第 2 节', await waitChapter(2, 9))
+          ok('跳到的正是命中所在的第 6 段那一栏', await until(() => (colOfSeg(6) === currentPage() ? true : null), 3000))
+        }
+
+        /* ---------- 9. 图文混排的节 ---------- */
+        {
+          await openPanel()
+          outlineItem('第三章 一张插图').click()
+          ok('切到第 3 节', await waitChapter(3, 5))
+          const img = await until(() => host.querySelector('.txt-p img'), 3000)
+          ok('随书插图渲染成了 <img>', !!img)
+          ok('图片用的是 blob: 地址（来自压缩包，不联网）', /^blob:/.test(img?.getAttribute('src') || ''))
+          ok('拿不到的那张图被丢掉了', host.querySelectorAll('.txt-p img').length === 1)
+          ok('script 被清掉（没有执行）', !window.__epubEvil && !host.querySelector('script'))
+          ok('正文照样读得下去', segEls().some((p) => p.textContent.includes('脚本被清掉之后')))
+          ok('行内 style / class 被剥掉', !host.querySelector('.txt-columns [style], .txt-columns [class*="noise"]'))
+          ok('图片加载完没有把位置打乱（页数已重算）', (readPageLabel()?.pages || 0) >= 1)
+        }
+
+        /* ---------- 10. 进度落盘 ---------- */
+        {
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+          await sleep(250)
+          const markIdx = topSegIndex()
+          const markStart = Number(segEls()[markIdx]?.dataset.start)
+          await sleep(1000)
+          const prog = await db.progress.get(id)
+          log('progress = ' + JSON.stringify({ chapterIndex: prog.chapterIndex, charOffset: prog.charOffset, page: prog.page, mode: prog.mode, started: prog.started }))
+          assertEq('进度记的是节序号', prog.chapterIndex, 2)
+          assertEq('page 同步成第几节（书架百分比用）', prog.page, 3)
+          assertEq('mode', prog.mode, 'page')
+          assertEq('started 已置 true', prog.started, true)
+          ok('记下了节内字符偏移（>0）', prog.charOffset > 0)
+          const savedOffset = prog.charOffset
+          const savedPage = currentPage()
+          log(`离开时：第 ${savedPage + 1} 页，锚点偏移 ${savedOffset}（段 ${markIdx} 起于 ${markStart}）`)
+          // 不变量：落盘的锚点必须就是「当前页顶段」的偏移。
+          // 翻页走 smooth 滚动，effect 跑的时候视口还在原地 —— 要是照那时的 scrollLeft 取锚点，
+          // 存下来的永远是 0（表现为退出再进来总回到这一节开头）。这条断言就是守它的。
+          assertEq('落盘锚点 == 当前页顶段的偏移', savedOffset, markStart)
+
+          /* ---------- 11. 重新进入恢复位置 ---------- */
+          root.unmount()
+          await sleep(150)
+          // 注入锚点 → 图片解码 → 重测，这三拍最容易把位置弄丢，所以给足时间（见 EpubReader.hasPendingImages）
+          root = makeRoot()
+          await until(() => host.querySelector('.scrub-num'), 6000)
+          await sleep(600)
+          // 这一节带图 —— 恢复位置必须撑过「注入锚点 → 图片解码 → 重测」这三拍，
+          // 否则会退回这一节开头（就是这条断言在守着的那个 bug）
+          const imgs = [...host.querySelectorAll('.txt-p img')]
+          assertEq('恢复的这一节带 1 张图', imgs.length, 1)
+          ok('图片已解码完（版面已定格）', imgs.every((im) => im.complete))
+          ok('重挂后回到第 3 节', await waitChapter(3, 5))
+          const p2 = await until(() => (currentPage() === savedPage ? true : null), 4000)
+          ok(`重新进入回到离开时的第 ${savedPage + 1} 页`, !!p2)
+          // 真正的判据：落盘锚点所在的那一段，必须仍显示在当前页上
+          {
+            const idx = built[2].segs.findIndex((s) => s.start === savedOffset)
+            const col = idx >= 0 ? colOfSeg(idx) : -1
+            log(`恢复校验：锚点段 ${idx} 在第 ${col + 1} 栏，当前第 ${currentPage() + 1} 页`)
+            assertEq('恢复后锚点段就在当前页', col, currentPage())
+          }
+          assertEq('恢复后高亮仍在（按 page 贴回来）', host.querySelectorAll('mark[data-hl]').length, 0)
+        }
+
+        /* ---------- 12. 书架条目 ---------- */
+        {
+          const Shelf = (await import('/src/components/Shelf.jsx')).default
+          const shelfHost = document.createElement('div')
+          shelfHost.style.cssText = 'position:absolute;left:-9999px;top:0;width:900px;height:600px'
+          document.body.appendChild(shelfHost)
+          const sroot = createRoot(shelfHost)
+          const books = [{ ...(await db.books.get(id)), progress: await db.progress.get(id) }]
+          sroot.render(
+            React.createElement(Shelf, { books, onImport: () => {}, onDelete: () => {}, onOpenBackup: () => {} })
+          )
+          const meta = await until(() => shelfHost.querySelector('.card-meta span'), 4000)
+          ok('书架渲染出这本书', !!meta)
+          assertEq('卡片标题', shelfHost.querySelector('.card-title')?.textContent, '样例电子书')
+          ok(`元信息按「节」显示并带上作者（${meta?.textContent}）`, /5 节 · 测试作者/.test(meta?.textContent || ''))
+          ok('EPUB 用封面缩略图', /^data:image\//.test(shelfHost.querySelector('.cover img')?.getAttribute('src') || ''))
+          const accept = shelfHost.querySelector('input[type=file]')?.getAttribute('accept') || ''
+          ok('导入框接受 .epub', accept.includes('.epub'))
+          // 进度条：page 3 / 5 节 → 60%
+          assertEq('进度条按「第几节 / 共几节」算', shelfHost.querySelector('.bar i')?.style.width, '60%')
+          sroot.unmount()
+          shelfHost.remove()
+        }
+
+        dump()
+        log(failed ? 'RESULT: FAIL (' + failed + ' 条断言未过)' : 'RESULT: PASS')
+        log('ALL DONE')
+      } catch (e) {
+        log('THROWN: ' + (e && e.message ? e.message : e))
+        log('stack: ' + (e && e.stack ? String(e.stack).split('\n').slice(0, 4).join(' | ') : ''))
+        dump()
+        log('ALL DONE')
+      }
+    </script>
+  </body>
+</html>

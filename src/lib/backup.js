@@ -232,35 +232,53 @@ export async function exportBackup({ includeFiles = false } = {}) {
 
 /* ---------------- 单本书的笔记导出 ---------------- */
 
-export function notesToMarkdown(book, highlights) {
+export function notesToMarkdown(book, highlights, opts = {}) {
+  // TXT / EPUB 的高亮是按章存的（page = 章序号），导出时标题也要跟着换单位
+  const unit = opts.unit ?? '页'
   const list = [...(highlights || [])].sort(
     (a, b) =>
       a.page - b.page ||
       (a.start?.item ?? 0) - (b.start?.item ?? 0) ||
       (a.start?.offset ?? 0) - (b.start?.offset ?? 0)
   )
+  const marks = [...(opts.bookmarks || [])].sort(
+    (a, b) => a.page - b.page || (a.charOffset ?? 0) - (b.charOffset ?? 0)
+  )
   const lines = [`# ${book?.title ?? '未命名'}`, '', `> 导出时间：${new Date().toLocaleString('zh-CN')}`, '']
-  if (!list.length) {
-    lines.push('_这本书还没有笔记。_', '')
+  if (!list.length && !marks.length) {
+    lines.push('_这本书还没有笔记，也没有书签。_', '')
     return lines.join('\n')
   }
-  lines.splice(2, 0, `> 共 ${list.length} 条高亮`)
-  let lastPage = -1
-  for (const h of list) {
-    if (h.page !== lastPage) {
-      lines.push('', `## 第 ${h.page + 1} 页`, '')
-      lastPage = h.page
+  if (list.length) {
+    lines.splice(2, 0, `> 共 ${list.length} 条高亮`)
+    let lastPage = -1
+    for (const h of list) {
+      if (h.page !== lastPage) {
+        lines.push('', `## 第 ${h.page + 1} ${unit}`, '')
+        lastPage = h.page
+      }
+      const text = String(h.text ?? '').replace(/\s*\n\s*/g, ' ').trim()
+      lines.push(`- ${text}`)
+      if (h.note) lines.push(`  - 备注：${h.note}`)
     }
-    const text = String(h.text ?? '').replace(/\s*\n\s*/g, ' ').trim()
-    lines.push(`- ${text}`)
-    if (h.note) lines.push(`  - 备注：${h.note}`)
+    lines.push('')
   }
-  lines.push('')
+  // 书签单独一段：它不是「划出来的笔记」，混在正文条目里会让人以为也是高亮
+  if (marks.length) {
+    lines.push('', `## 书签（${marks.length} 条）`, '')
+    for (const b of marks) {
+      const title = b.label ? ` · ${b.label}` : ''
+      lines.push(`- 第 ${b.page + 1} ${unit}${title}`)
+      const snip = String(b.snippet ?? '').replace(/\s*\n\s*/g, ' ').trim()
+      if (snip) lines.push(`  - ${snip}`)
+    }
+    lines.push('')
+  }
   return lines.join('\n')
 }
 
-export function exportNotes(book, highlights) {
-  const md = notesToMarkdown(book, highlights)
+export function exportNotes(book, highlights, opts = {}) {
+  const md = notesToMarkdown(book, highlights, opts)
   const safe = String(book?.title ?? 'notes').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60)
   const filename = `${safe}-笔记-${stamp()}.md`
   downloadBlob(new Blob([md], { type: 'text/markdown;charset=utf-8' }), filename)
@@ -288,7 +306,11 @@ export function parseBackup(text) {
 const markKey = (h) =>
   `${h.bookId}|${h.page}|${h.start?.item}|${h.start?.offset}|${h.end?.item}|${h.end?.offset}`
 
-const bookmarkKey = (b) => `${b.bookId}|${b.page}`
+/**
+ * 书签的去重键必须带 charOffset：TXT / EPUB 里同一章可以有好几个书签
+ * （章内不同位置），只按 page 去重会让它们互相顶掉，恢复后只剩一个。
+ */
+const bookmarkKey = (b) => `${b.bookId}|${b.page}|${b.charOffset ?? 0}`
 
 /**
  * 按指纹合并恢复。**不覆盖、不清库**，只做加法：
@@ -380,7 +402,7 @@ export async function restoreBackup(data) {
     report.highlights++
   }
 
-  // 书签：表还没有 UI，但恢复逻辑先就位，免得以后加 UI 时漏掉
+  // 书签：按「章/页 + 章内偏移」去重（同一章可以有多个书签）
   const seenMarks = new Set((await db.bookmarks.toArray()).map(bookmarkKey))
   for (const bm of data.bookmarks || []) {
     const bid = idMap.get(Number(bm.bookId))

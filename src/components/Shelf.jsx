@@ -1,13 +1,25 @@
 import { useRef, useState } from 'react'
-import { isPdfFile } from '../lib/importer'
+import { isSupportedFile } from '../lib/importer'
 import { goRead } from '../hooks/useHashRoute'
+
+/**
+ * 书卡片上那行小字。三种格式的「是什么」不同（页 / 章 / 节），
+ * 而且只有 EPUB 带作者，所以统一在这里拼。
+ */
+function metaText(b, pct) {
+  if (b.missingFile) return '笔记已保留'
+  if (b.format === 'pdf') return pct > 0 ? `已读 ${pct}%` : `${b.pageCount} 页`
+  const unit = b.format === 'txt' ? '章' : '节'
+  const size = b.author ? `${b.pageCount} ${unit} · ${b.author}` : `${b.pageCount} ${unit}`
+  return pct > 0 ? `已读 ${pct}% · ${size}` : size
+}
 
 export default function Shelf({ books, onImport, onDelete, onOpenBackup }) {
   const [over, setOver] = useState(false)
   const inputRef = useRef(null)
 
   const pick = (list) => {
-    const files = Array.from(list || []).filter(isPdfFile)
+    const files = Array.from(list || []).filter(isSupportedFile)
     if (files.length) onImport(files)
   }
 
@@ -19,12 +31,12 @@ export default function Shelf({ books, onImport, onDelete, onOpenBackup }) {
           备份
         </button>
         <button className="btn btn-primary" onClick={() => inputRef.current?.click()}>
-          导入 PDF
+          导入图书
         </button>
         <input
           ref={inputRef}
           type="file"
-          accept="application/pdf,.pdf"
+          accept=".pdf,application/pdf,.txt,.text,text/plain,.epub,application/epub+zip"
           multiple
           hidden
           onChange={(e) => {
@@ -48,14 +60,14 @@ export default function Shelf({ books, onImport, onDelete, onOpenBackup }) {
         }}
       >
         <div className={`dropzone${over ? ' over' : ''}`}>
-          <strong>把 PDF 拖进来</strong>
+          <strong>把 PDF、TXT 或 EPUB 拖进来</strong>
           或点右上角导入 · 文件只存在这台设备上，记得定期导出备份
         </div>
 
         {books.length === 0 ? (
           <div className="empty">
             <span>▤</span>
-            还没有书，先导入一个 PDF 试试
+            还没有书，先导入一个 PDF、TXT 或 EPUB 试试
           </div>
         ) : (
           <div className="grid">
@@ -84,13 +96,7 @@ export default function Shelf({ books, onImport, onDelete, onOpenBackup }) {
                       {b.title}
                     </button>
                     <div className="card-meta">
-                      <span>
-                        {b.missingFile
-                          ? '笔记已保留'
-                          : pct > 0
-                            ? `已读 ${pct}%`
-                            : `${b.pageCount} 页`}
-                      </span>
+                      <span>{metaText(b, pct)}</span>
                       <button className="card-del" onClick={() => onDelete(b)}>
                         删除
                       </button>

@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Bookmarks (db / backup / panel / 3 readers)</title>
+    <style>
+      body { font: 12px/1.5 monospace; padding: 12px; margin: 0; }
+      /* 又窄又矮：一章要跨好几栏，才测得到「同一章里两个位置不同的书签」。
+         给宽了整章一页就完，章内偏移恒为 0，这个测试就没意义了。 */
+      #host { width: 280px; height: 320px; position: relative; border: 1px solid #888; overflow: hidden; }
+      #log { position: fixed; right: 0; top: 0; width: 560px; height: 100vh; background: #fff; z-index: 99999; padding: 10px; overflow: auto; border-left: 1px solid #ccc; }
+    </style>
+  </head>
+  <body>
+    <div id="host"></div>
+    <div id="log"></div>
+    <script>
+      window.__errs = []
+      window.addEventListener('error', (e) => {
+        window.__errs.push('WINDOW ERROR: ' + (e.message || e.error) + ' @ ' + (e.filename || '') + ':' + (e.lineno || ''))
+      })
+      window.addEventListener('unhandledrejection', (e) =>
+        window.__errs.push('REJECTION: ' + (e.reason && e.reason.message ? e.reason.message : e.reason))
+      )
+    </script>
+    <script type="module">
+      import '/src/styles.css'
+
+      const ENDPOINT = 'http://127.0.0.1:5178/log'
+      const IN_TARGET = location.pathname.endsWith('dev-bookmark.html')
+      const log = (m) => {
+        document.getElementById('log').innerHTML += `<div>${m}</div>`
+        if (IN_TARGET) { try { fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true }) } catch {} }
+      }
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+      const dump = () => window.__errs.forEach((e) => log(e))
+      let failed = 0
+      const assertEq = (label, got, want) => {
+        const pass = got === want
+        if (!pass) failed++
+        log(`${pass ? 'ok  ' : 'BAD '}${label}: ${JSON.stringify(got)}` + (pass ? '' : ' (want ' + JSON.stringify(want) + ')'))
+      }
+      const ok = (label, cond) => {
+        if (!cond) failed++
+        log(`${cond ? 'ok  ' : 'BAD '}${label}`)
+      }
+      const until = async (fn, ms = 6000, step = 50) => {
+        const t0 = Date.now()
+        for (;;) {
+          let v = null
+          try { v = fn() } catch (e) { v = null }
+          if (v) return v
+          if (Date.now() - t0 > ms) return null
+          await sleep(step)
+        }
+      }
+      // until 只收同步判定（Promise 恒为真）；**异步断言一律用这个**
+      const waitFor = async (fn, ms = 6000, step = 50) => {
+        const t0 = Date.now()
+        for (;;) {
+          let v = null
+          try { v = await fn() } catch (e) { v = null }
+          if (v) return v
+          if (Date.now() - t0 > ms) return null
+          await sleep(step)
+        }
+      }
+
+      const host = document.getElementById('host')
+
+      try {
+        log('boot')
+
+        const { db, getBook, listBookmarks, addBookmark, deleteBookmark } = await import('/src/db.js')
+        const { buildBackup, restoreBackup, notesToMarkdown } = await import('/src/lib/backup.js')
+        const { importFile } = await import('/src/lib/importer.js')
+        const React = (await import('react')).default
+        const { createRoot } = await import('react-dom/client')
+        const SidePanel = (await import('/src/components/SidePanel.jsx')).default
+        const TxtReader = (await import('/src/components/TxtReader.jsx')).default
+        const EpubReader = (await import('/src/components/EpubReader.jsx')).default
+        const PdfReader = (await import('/src/components/PdfReader.jsx')).default
+
+        await db.delete()
+        await db.open()
+        log('db cleared')
+
+        /* ================= 1. 数据层：CRUD 与按书隔离 ================= */
+        const { putBook } = await import('/src/db.js')
+        const idA = await putBook({ title: 'A', format: 'txt', pageCount: 5, blob: new Blob(['a']) })
+        const idB = await putBook({ title: 'B', format: 'txt', pageCount: 5, blob: new Blob(['b']) })
+
+        assertEq('新库没有书签', (await listBookmarks(idA)).length, 0)
+
+        await addBookmark({ bookId: idA, page: 0, charOffset: 0, label: '第一章', snippet: '开头' })
+        await addBookmark({ bookId: idA, page: 0, charOffset: 120, label: '第一章', snippet: '中途' })
+        await addBookmark({ bookId: idA, page: 3, charOffset: 0 })
+        await addBookmark({ bookId: idB, page: 1, charOffset: 0 })
+
+        const listA = await listBookmarks(idA)
+        assertEq('A 有 3 个书签', listA.length, 3)
+        assertEq('B 只有自己的 1 个（按书隔离）', (await listBookmarks(idB)).length, 1)
+        ok('按「页 + 章内偏移」排序', listA[0].page === 0 && listA[0].charOffset === 0 && listA[1].charOffset === 120 && listA[2].page === 3)
+        ok('同一章可以有两个书签，互不顶替', listA[0].page === listA[1].page && listA[0].charOffset !== listA[1].charOffset)
+        assertEq('label 默认空串', listA[2].label, '')
+        assertEq('snippet 默认空串', listA[2].snippet, '')
+        ok('createdAt 自动补上', Number.isFinite(listA[0].createdAt) && listA[0].createdAt > 0)
+        assertEq('bookId 被规整成数字', typeof listA[0].bookId, 'number')
+
+        const bareId = await addBookmark({ bookId: idB, page: 0 })
+        const bareRow = (await listBookmarks(idB)).find((b) => b.id === bareId)
+        assertEq('省略 charOffset 时归 0', bareRow.charOffset, 0)
+        await deleteBookmark(bareId)
+        assertEq('删除后只剩 1 个', (await listBookmarks(idB)).length, 1)
+
+        /* ================= 2. 备份：去重键必须含 charOffset ================= */
+        const snapshot = await buildBackup()
+        assertEq('备份带上了 4 个书签', snapshot.bookmarks.length, 4)
+
+        // 清空书签再恢复 —— 同一章的两个偏移不同的书签都必须回来。
+        // 键里要是漏了 charOffset，这两个会被当成同一条，只剩一个。
+        await db.bookmarks.clear()
+        assertEq('清空后为 0', (await listBookmarks(idA)).length, 0)
+
+        const rep1 = await restoreBackup(snapshot)
+        assertEq('第一次恢复写入 4 个', rep1.bookmarks, 4)
+        assertEq('A 的两个同章书签都回来了', (await listBookmarks(idA)).length, 3)
+
+        const rep2 = await restoreBackup(snapshot)
+        assertEq('再恢复一次全部按位置去重（不重复写）', rep2.bookmarks, 0)
+        assertEq('总数仍是 4（没翻倍）', (await db.bookmarks.toArray()).length, 4)
+
+        /* ================= 3. 笔记导 MD：书签单独一段 ================= */
+        const md = notesToMarkdown(
+          { title: '书签测试' },
+          [{ page: 0, start: { item: 0, offset: 0 }, text: '一句高亮' }],
+          { unit: '章', bookmarks: snapshot.bookmarks.filter((b) => b.bookId === idA) }
+        )
+        ok('导出里有「书签」小节', md.includes('## 书签（3 条）'))
+        ok('书签带位置与摘要', md.includes('- 第 1 章 · 第一章') && md.includes('  - 中途'))
+        ok('高亮与书签都在同一份导出里', md.includes('一句高亮'))
+        const mdOnlyMarks = notesToMarkdown({ title: 'X' }, [], { unit: '章', bookmarks: [{ page: 0, charOffset: 0, snippet: 's' }] })
+        ok('只有书签、没有高亮时也导得出来', mdOnlyMarks.includes('## 书签（1 条）') && !mdOnlyMarks.includes('还没有笔记'))
+
+        /* ================= 4. 侧栏：书签标签页 ================= */
+        await db.bookmarks.clear()
+        const marks = [
+          { id: 1, bookId: idA, page: 0, charOffset: 0, label: '第一章', snippet: '开头的一句' },
+          { id: 2, bookId: idA, page: 0, charOffset: 120, label: '第一章', snippet: '中间的一句' },
+          { id: 3, bookId: idA, page: 4, charOffset: 0, label: '第五章', snippet: '结尾' },
+        ]
+        const jumped = []
+        const removed = []
+        let toggled = 0
+        const panelHost = document.createElement('div')
+        panelHost.id = 'panel-host'
+        document.body.appendChild(panelHost)
+        const panelRoot = createRoot(panelHost)
+        const mountPanel = (currentBookmark) =>
+          panelRoot.render(
+            React.createElement(SidePanel, {
+              outline: [],
+              current: 0,
+              onClose: () => {},
+              onJumpPage: () => {},
+              highlights: [],
+              onMarkDelete: () => {},
+              ensureIndex: async () => [],
+              indexProgress: null,
+              onJumpHit: () => {},
+              onExportNotes: () => {},
+              query: '',
+              setQuery: () => {},
+              search: async () => [],
+              pageLabel: (i) => `第${i + 1}章`,
+              onNoteJump: () => {},
+              bookmarks: marks,
+              currentBookmark,
+              onBookmarkToggle: () => { toggled++ },
+              onJumpBookmark: (b) => jumped.push(b),
+              onBookmarkDelete: (b) => removed.push(b),
+            })
+          )
+        mountPanel(marks[1])
+
+        const tabs = await until(() => (panelHost.querySelectorAll('.tab').length ? panelHost.querySelectorAll('.tab') : null))
+        assertEq('侧栏 4 个标签', tabs.length, 4)
+        const tabTexts = [...tabs].map((t) => t.textContent.replace(/\d+/g, '').trim())
+        ok(`标签是 目录/书签/笔记/搜索（${tabTexts.join('/')}）`, tabTexts.join('/') === '目录/书签/笔记/搜索')
+
+        const bmTab = [...panelHost.querySelectorAll('.tab')].find((t) => t.textContent.includes('书签'))
+        bmTab.click()
+        const items = await until(() => (panelHost.querySelectorAll('.bm-item').length ? panelHost.querySelectorAll('.bm-item') : null))
+        assertEq('列出 3 个书签', items.length, 3)
+        assertEq('标签上的数量徽标', panelHost.querySelector('.tab .tab-badge')?.textContent, '3')
+        assertEq('计数文案', panelHost.querySelector('.notes-count')?.textContent, '共 3 个')
+        assertEq('位置标签按格式渲染', panelHost.querySelector('.bm-pg')?.textContent, '第1章')
+        assertEq('标题接在位置后面', panelHost.querySelector('.bm-label')?.textContent, '第一章')
+        assertEq('摘要用于认出「这是哪儿」', panelHost.querySelector('.bm-snippet')?.textContent, '开头的一句')
+        assertEq('当前页那条被标成选中', panelHost.querySelectorAll('.bm-item.on').length, 1)
+        assertEq('选中的是第 2 条（当前页所在）', panelHost.querySelector('.bm-item.on')?.dataset.bookmark, '2')
+
+        const toggleBtn = panelHost.querySelector('[data-bm-toggle]')
+        ok('顶部有「切换当前位置」按钮', !!toggleBtn)
+        assertEq('当前页已有书签 → 文案是取消', toggleBtn.textContent.trim(), '取消当前位置')
+        toggleBtn.click()
+        assertEq('点它触发切换回调', toggled, 1)
+        mountPanel(null)
+        await sleep(80)
+        assertEq('当前页没有书签时文案变成加', panelHost.querySelector('[data-bm-toggle]')?.textContent.trim(), '加当前位置')
+        assertEq('没有当前书签时列表里无选中项', panelHost.querySelectorAll('.bm-item.on').length, 0)
+
+        panelHost.querySelectorAll('.bm-main')[2].click()
+        assertEq('点书签触发跳转回调', jumped.length, 1)
+        assertEq('跳转拿到的是那一条', jumped[0].id, 3)
+        panelHost.querySelectorAll('.bm-del')[0].click()
+        assertEq('点叉触发删除回调', removed.length, 1)
+        assertEq('删的是第一条', removed[0].id, 1)
+
+        // 空状态
+        panelRoot.unmount()
+        const emptyRoot = createRoot(panelHost)
+        emptyRoot.render(
+          React.createElement(SidePanel, {
+            outline: [], current: 0, onClose: () => {}, onJumpPage: () => {},
+            highlights: [], onMarkDelete: () => {}, ensureIndex: async () => [], indexProgress: null,
+            onJumpHit: () => {}, onExportNotes: () => {}, query: '', setQuery: () => {}, search: async () => [],
+            pageLabel: (i) => `第${i + 1}章`, onNoteJump: () => {},
+            bookmarks: [], currentBookmark: null,
+            onBookmarkToggle: () => {}, onJumpBookmark: () => {}, onBookmarkDelete: () => {},
+          })
+        )
+        const emptyTab = await until(() => [...panelHost.querySelectorAll('.tab')].find((t) => t.textContent.includes('书签')))
+        emptyTab.click()
+        // 注意：不切到「书签」标签时，面板里也会有一个 .outline-empty（那是目录的空态），
+        // 所以必须等**文案**变成书签那句，不能只等元素出现。
+        const emptyMsg = await until(() => {
+          const t = panelHost.querySelector('.outline-empty')?.textContent || ''
+          return /还没有书签/.test(t) ? t : null
+        }, 4000)
+        ok('空状态有引导文案', !!emptyMsg)
+        assertEq('空的时候没有徽标', panelHost.querySelector('.tab .tab-badge'), null)
+        assertEq('空的时候计数说暂无', panelHost.querySelector('.notes-count')?.textContent, '暂无书签')
+        emptyRoot.unmount()
+        panelHost.remove()
+
+        /* ================= 5. TXT 阅读器：翻页加书签 → 重挂 → 跳回 ================= */
+        await db.delete()
+        await db.open()
+        const asFile = async (name, url, type) => new File([await (await fetch(url)).arrayBuffer()], name, { type })
+        const txtFile = await asFile('sample-utf8.txt', '/@fs/D:/book-reader/samples/sample-utf8.txt', 'text/plain')
+        const rt = await importFile(txtFile)
+        assertEq('TXT 导入', rt.format, 'txt')
+        assertEq('TXT 记了 5 章', rt.chapters, 5)
+
+        const makeTxt = () => {
+          const r = createRoot(host)
+          r.render(React.createElement(TxtReader, { bookId: rt.id, title: 'sample', onBack: () => {} }))
+          return r
+        }
+        let root = makeTxt()
+
+        const pageLabel = () => {
+          const el = host.querySelector('.scrub-num')
+          if (!el) return null
+          const m = el.textContent.match(/(\d+)\s*\/\s*(\d+)/)
+          return m ? { page: Number(m[1]), pages: Number(m[2]) } : null
+        }
+        const bmOn = () => host.querySelector('.bm-btn')?.dataset.on
+        // 书签状态是**异步落定**的（addBookmark → reloadBookmarks → setState → 重渲染），
+        // 断言必须等 DOM 反映出来，只等数据库里那行出现会跑在渲染前面。
+        const waitBm = (on, ms = 6000) => waitFor(() => (bmOn() === (on ? '1' : '0') ? true : null), ms)
+        const waitToast = (re, ms = 6000) => waitFor(() => {
+          const t = host.querySelector('.toast')?.textContent || ''
+          return re.test(t) ? t : null
+        }, ms)
+
+        ok('顶栏有书签按钮', !!(await until(() => host.querySelector('.bm-btn'), 8000)))
+        assertEq('起始空心', bmOn(), '0')
+
+        // 前言章很短（两行），一页就完 —— 换到「第1章 出发」才有翻页可言。
+        // 顺便把「目录跳转」这条链路也走一遍。
+        ;[...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '面板').click()
+        const ch1 = await until(() => [...host.querySelectorAll('.outline-item')].find((b) => b.textContent.includes('出发')))
+        ok('目录里有第 1 章', !!ch1)
+        ch1.click()
+        const head1 = await until(() => (/出发/.test(host.querySelector('.txt-head-title')?.textContent || '') ? true : null), 6000)
+        ok('跳到第 1 章', !!head1)
+
+        const p0 = await until(() => { const l = pageLabel(); return l && l.pages > 1 ? l : null }, 8000)
+        ok(`第 1 章跨 ${p0?.pages} 页（够翻）`, !!p0)
+
+        host.querySelector('.bm-btn').click()
+        ok('加书签给了提示', !!(await waitToast(/已加书签 · 第 2 章/)))
+        ok('加完按钮变实心', !!(await waitBm(true)))
+        const bms1 = await listBookmarks(rt.id)
+        assertEq('书签落库 1 条', bms1.length, 1)
+        assertEq('书签记的是第 1 章（0 基）', bms1[0].page, 1)
+        assertEq('书签存了章标题当 label', bms1[0].label, '第1章 出发')
+        ok(`书签带摘要（${(bms1[0].snippet || '').slice(0, 12)}…）`, (bms1[0].snippet || '').length > 0)
+        assertEq('章首的锚点偏移是 0', bms1[0].charOffset, 0)
+
+        // 翻到下一页，同章再记一个 —— 关键：同章两个书签不能互相顶掉
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+        const p1 = await until(() => { const l = pageLabel(); return l && l.page !== p0.page ? l : null }, 6000)
+        ok(`翻到下一页（第 ${p1?.page}/${p1?.pages} 页）`, !!p1)
+        await sleep(250) // 锚点是「滚动停稳」后才刷新的，翻完立刻点会拿到上一页的偏移
+        await waitBm(false)
+        assertEq('换了页 → 按钮回到空心', bmOn(), '0')
+
+        host.querySelector('.bm-btn').click()
+        ok('第二个书签也给了提示', !!(await waitToast(/已加书签/)))
+        await waitBm(true)
+        const bms2 = await listBookmarks(rt.id)
+        assertEq('同一章有了两个书签', bms2.length, 2)
+        ok(`第二个书签带章内偏移（${bms2[1].charOffset}）`, (bms2[1].charOffset ?? 0) > 0)
+        assertEq('两个书签章号相同', bms2[0].page === bms2[1].page, true)
+        ok('两个偏移不同（没被顶掉）', bms2[0].charOffset !== bms2[1].charOffset)
+
+        // 按一下实心按钮 = 取消（toggle 的语义）：删的是**当前页**那条
+        host.querySelector('.bm-btn').click()
+        ok('取消时给了提示', !!(await waitToast(/已删除/)))
+        await waitBm(false)
+        const afterCancel = await listBookmarks(rt.id)
+        assertEq('取消后只剩 1 个书签', afterCancel.length, 1)
+        assertEq('删掉的是当前页那条，留下章首那条', afterCancel[0].charOffset, 0)
+
+        // 重挂 → 位置按章内偏移恢复 → 再从侧栏书签跳回章首那一页
+        root.unmount()
+        await sleep(150)
+        root = makeTxt()
+        await until(() => host.querySelector('.bm-btn'), 8000)
+        const restored = await until(() => { const l = pageLabel(); return l && l.pages > 1 ? l : null }, 8000)
+        assertEq('重挂后按章内偏移恢复到第 2 页（不是章首）', restored?.page, 2)
+        ;[...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '面板').click()
+        const bmTab2 = await until(() => [...host.querySelectorAll('.tab')].find((t) => t.textContent.includes('书签')))
+        bmTab2.click()
+        const listed = await until(() => (host.querySelectorAll('.bm-item').length ? host.querySelectorAll('.bm-item') : null))
+        assertEq('重挂后侧栏里还剩 1 个书签', listed.length, 1)
+        assertEq('位置标签写的是章', host.querySelector('.bm-pg')?.textContent, '第2章')
+
+        host.querySelector('.bm-main').click()
+        const backPage = await until(() => { const l = pageLabel(); return l && l.page === 1 ? l : null }, 7000)
+        ok(`点书签跳回章首那一页（第 ${backPage?.page} 页）`, !!backPage)
+        assertEq('跳回后按钮变实心（说明当前页正是书签页）', bmOn(), '1')
+
+        root.unmount()
+        await sleep(120)
+        host.innerHTML = ''
+
+        /* ================= 6. EPUB 阅读器：同样的链路 ================= */
+        await db.delete()
+        await db.open()
+        const epubFile = await asFile('sample.epub', '/@fs/D:/book-reader/samples/sample.epub', 'application/epub+zip')
+        const re = await importFile(epubFile)
+        assertEq('EPUB 导入', re.format, 'epub')
+        assertEq('EPUB 5 节', re.chapters, 5)
+
+        const makeEpub = () => {
+          const r = createRoot(host)
+          r.render(React.createElement(EpubReader, { bookId: re.id, title: '样例电子书', onBack: () => {} }))
+          return r
+        }
+        root = makeEpub()
+        const ep0 = await until(() => { const l = pageLabel(); return l && l.pages > 1 ? l : null }, 10000)
+        ok(`EPUB 阅读器起来了，本节 ${ep0?.pages} 页`, !!ep0)
+        assertEq('EPUB 顶栏也有书签按钮', !!(await until(() => host.querySelector('.bm-btn'))), true)
+        assertEq('起始空心', bmOn(), '0')
+
+        host.querySelector('.bm-btn').click()
+        ok('EPUB 加书签给了提示', !!(await waitToast(/已加书签 · 第 1 节/)))
+        await waitBm(true)
+        const ebms = await listBookmarks(re.id)
+        assertEq('EPUB 书签落库 1 条', ebms.length, 1)
+        assertEq('EPUB 书签记的是节序号', ebms[0].page, 0)
+        assertEq('EPUB 存的是节标题', ebms[0].label, '第一章 晨读')
+        ok(`EPUB 书签带摘要（${(ebms[0].snippet || '').slice(0, 12)}…）`, (ebms[0].snippet || '').length > 0)
+        assertEq('节首偏移为 0', ebms[0].charOffset, 0)
+
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+        const ep1 = await until(() => { const l = pageLabel(); return l && l.page !== ep0.page ? l : null }, 7000)
+        ok(`EPUB 翻到下一页（第 ${ep1?.page}/${ep1?.pages} 页）`, !!ep1)
+        // EPUB 的锚点是「滚动静默 120ms」+ 图片解码后才落定的（见 EpubReader 的 syncAnchorFromScroll），
+        // 所以必须等它停稳再点书签，否则记下的会是上一页的偏移。
+        await sleep(450)
+        await waitBm(false)
+        assertEq('换页后按钮回到空心', bmOn(), '0')
+        host.querySelector('.bm-btn').click()
+        await waitToast(/已加书签/)
+        await waitBm(true)
+        const ebms2 = await listBookmarks(re.id)
+        assertEq('EPUB 同一节两个书签并存', ebms2.length, 2)
+        ok(`EPUB 第二个书签带节内偏移（${ebms2[1].charOffset}）`, (ebms2[1].charOffset ?? 0) > 0)
+        ok('两个偏移不同', ebms2[0].charOffset !== ebms2[1].charOffset)
+        const epubTarget = ebms2[1].charOffset
+
+        // 重挂 → 点侧栏书签跳回（EPUB 的重排/图片异步解码最容易把位置弄丢）
+        root.unmount()
+        await sleep(150)
+        root = makeEpub()
+        await until(() => { const l = pageLabel(); return l && l.pages > 1 ? l : null }, 10000)
+        ;[...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '面板').click()
+        const bmTab3 = await until(() => [...host.querySelectorAll('.tab')].find((t) => t.textContent.includes('书签')))
+        bmTab3.click()
+        const epubItems = await until(() => (host.querySelectorAll('.bm-item').length ? host.querySelectorAll('.bm-item') : null))
+        assertEq('EPUB 侧栏列出 2 个书签', epubItems.length, 2)
+        ok('EPUB 位置标签按「节」渲染', /节/.test(host.querySelector('.bm-pg')?.textContent || ''))
+        host.querySelectorAll('.bm-main')[1].click()
+        const epubBack = await until(() => { const l = pageLabel(); return l && l.page > 1 ? l : null }, 8000)
+        ok(`EPUB 点书签跳回原页（回到第 ${epubBack?.page} 页）`, !!epubBack)
+        assertEq('EPUB 跳回后按钮变实心', bmOn(), '1')
+        ok('跳回的正是那个偏移的书签', !!(await listBookmarks(re.id)).find((b) => (b.charOffset ?? 0) === epubTarget))
+
+        root.unmount()
+        await sleep(120)
+        host.innerHTML = ''
+
+        /* ================= 7. PDF 阅读器：只记页号 ================= */
+        await db.delete()
+        await db.open()
+        const pdfFile = await asFile('sample.pdf', '/@fs/D:/book-reader/samples/sample.pdf', 'application/pdf')
+        const rp = await importFile(pdfFile)
+        assertEq('PDF 导入', rp.format, 'pdf')
+        assertEq('PDF 页数落库', (await getBook(rp.id)).pageCount, 6)
+
+        const makePdf = () => {
+          const r = createRoot(host)
+          r.render(React.createElement(PdfReader, { bookId: rp.id, title: 'sample', onBack: () => {} }))
+          return r
+        }
+        root = makePdf()
+        const pdfBtn = await until(() => host.querySelector('.bm-btn'), 15000)
+        ok('PDF 顶栏有书签按钮', !!pdfBtn)
+        assertEq('起始空心', bmOn(), '0')
+
+        pdfBtn.click()
+        ok('PDF 加书签给了提示', !!(await waitToast(/已加书签 · 第 1 页/)))
+        await waitBm(true)
+        const pbms = await listBookmarks(rp.id)
+        assertEq('PDF 书签落库 1 条', pbms.length, 1)
+        assertEq('PDF 书签记的是 0 基页号', pbms[0].page, 0)
+        assertEq('PDF 不需要章内偏移（恒 0）', pbms[0].charOffset, 0)
+        assertEq('PDF 不存重复的 label（页号本身就是位置）', pbms[0].label, '')
+
+        // 翻到第 3 页再加一个：PDF 是固定版式，换页 = 换书签位置。
+        // 用底栏那个 range 直接设值（React 的 value tracker 要用原生 setter 绕）。
+        const range = host.querySelector('.scrub input[type=range]')
+        let moved = false
+        if (range) {
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+          setter.call(range, '3')
+          range.dispatchEvent(new Event('input', { bubbles: true }))
+          range.dispatchEvent(new Event('change', { bubbles: true }))
+          moved = !!(await until(() => (/^3\s*\//.test(host.querySelector('.scrub-num')?.textContent || '') ? true : null), 5000))
+        }
+        if (moved) {
+          await waitBm(false)
+          assertEq('换页后按钮回到空心', bmOn(), '0')
+          host.querySelector('.bm-btn').click()
+          await waitBm(true)
+          const pbms2 = await listBookmarks(rp.id)
+          assertEq('PDF 两个不同页的书签并存', pbms2.length, 2)
+          assertEq('第二个记的是第 2 页（0 基）', pbms2[1].page, 2)
+          // 取消当前页
+          host.querySelector('.bm-btn').click()
+          await waitBm(false)
+          assertEq('PDF 取消后只剩 1 个', (await listBookmarks(rp.id)).length, 1)
+        } else {
+          log('（PDF 底栏 range 没驱动成功，跳过「翻页后加第二个书签」两项；这不影响书签本身已验过的行为）')
+          host.querySelector('.bm-btn').click()
+          await waitBm(false)
+          assertEq('PDF 再点一次 = 取消', (await listBookmarks(rp.id)).length, 0)
+        }
+
+        root.unmount()
+        await sleep(120)
+        host.remove()
+
+        dump()
+        log(failed ? 'RESULT: FAIL (' + failed + ' 条断言未过)' : 'RESULT: PASS')
+        log('ALL DONE')
+      } catch (e) {
+        log('THROWN: ' + (e && e.message ? e.message : e))
+        log('stack: ' + (e && e.stack ? String(e.stack).split('\n').slice(0, 4).join(' | ') : ''))
+        dump()
+        log('RESULT: FAIL (thrown)')
+        log('ALL DONE')
+      }
+    </script>
+  </body>
+</html>

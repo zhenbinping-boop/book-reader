@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>EPUB test</title>
+    <style>
+      body { font: 12px/1.5 monospace; padding: 12px; margin: 0; }
+      #host { width: 720px; height: 520px; position: relative; border: 1px solid #888; }
+      #log { position: fixed; right: 0; top: 0; width: 540px; height: 100vh; background: #fff; z-index: 99999; padding: 10px; overflow: auto; border-left: 1px solid #ccc; }
+    </style>
+  </head>
+  <body>
+    <div id="host"></div>
+    <div id="log"></div>
+    <script>
+      window.__errs = []
+      window.addEventListener('error', (e) => {
+        window.__errs.push('WINDOW ERROR: ' + (e.message || e.error) + ' @ ' + (e.filename || '') + ':' + (e.lineno || ''))
+      })
+      window.addEventListener('unhandledrejection', (e) =>
+        window.__errs.push('REJECTION: ' + (e.reason && e.reason.message ? e.reason.message : e.reason))
+      )
+    </script>
+    <script type="module">
+      import '/src/styles.css'
+
+      const ENDPOINT = 'http://127.0.0.1:5178/log'
+      const IN_TARGET = location.pathname.endsWith('dev-epub.html')
+      const log = (m) => {
+        document.getElementById('log').innerHTML += `<div>${m}</div>`
+        if (IN_TARGET) { try { fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true }) } catch {} }
+      }
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+      const dump = () => window.__errs.forEach((e) => log(e))
+      let failed = 0
+      const assertEq = (label, got, want) => {
+        const pass = got === want
+        if (!pass) failed++
+        log(`${pass ? 'ok  ' : 'BAD '}${label}: ${JSON.stringify(got)}` + (pass ? '' : ' (want ' + JSON.stringify(want) + ')'))
+      }
+      const ok = (label, cond) => {
+        if (!cond) failed++
+        log(`${cond ? 'ok  ' : 'BAD '}${label}`)
+      }
+      const until = async (fn, ms = 5000, step = 50) => {
+        const t0 = Date.now()
+        for (;;) {
+          const v = fn()
+          if (v) return v
+          if (Date.now() - t0 > ms) return null
+          await sleep(step)
+        }
+      }
+
+      try {
+        log('boot')
+
+        const Z = await import('/src/lib/zip.js')
+        const E = await import('/src/lib/epub.js')
+        const D = await import('/src/lib/epubDom.js')
+        const dbmod = await import('/src/db.js')
+        const { db } = dbmod
+        const React = (await import('react')).default
+        const { createRoot } = await import('react-dom/client')
+
+        await db.delete()
+        await db.open()
+        log('db cleared')
+
+        const bytesOf = async (p) => new Uint8Array(await (await fetch(p)).arrayBuffer())
+        const epubBytes = await bytesOf('/@fs/D:/book-reader/samples/sample.epub')
+        const ncxBytes = await bytesOf('/@fs/D:/book-reader/samples/sample-ncx.epub')
+        log(`sample.epub ${epubBytes.length}B / sample-ncx.epub ${ncxBytes.length}B`)
+
+        /* ---------- 1. ZIP ---------- */
+        const zip = Z.openZip(epubBytes)
+        assertEq('条目数', zip.names.length, 13)
+        assertEq('mimetype 排在第一个', zip.names[0], 'mimetype')
+        assertEq('mimetype 内容', await zip.text('mimetype'), 'application/epub+zip')
+        assertEq('stored 条目也能读', (await zip.read('mimetype')).length, 20)
+        assertEq('deflate 条目解压正确', (await zip.text('META-INF/container.xml')).includes('OEBPS/content.opf'), true)
+        assertEq('读不存在的条目返回 null', await zip.read('nope.txt'), null)
+        assertEq('has() 认得出', zip.has('OEBPS/text/ch1.xhtml'), true)
+        ok('二进制条目解压后是合法 PNG 头', [...(await zip.read('OEBPS/images/cover.png')).slice(0, 4)].join(',') === '137,80,78,71')
+
+        // 路径解析
+        assertEq('相对路径 ..', Z.resolveZipPath('OEBPS/text/', '../images/pic.png').path, 'OEBPS/images/pic.png')
+        assertEq('同目录相对路径', Z.resolveZipPath('OEBPS/text/', 'ch2.xhtml').path, 'OEBPS/text/ch2.xhtml')
+        assertEq('带锚点', Z.resolveZipPath('OEBPS/text/', 'ch2.xhtml#par3').fragment, 'par3')
+        assertEq('百分号转义', Z.resolveZipPath('OEBPS/text/', 'a%20b.xhtml').path, 'OEBPS/text/a b.xhtml')
+        assertEq('dirOf', Z.dirOf('OEBPS/content.opf'), 'OEBPS/')
+
+        let zipErr = ''
+        try {
+          Z.openZip(new Uint8Array([1, 2, 3, 4, 5]))
+        } catch (e) {
+          zipErr = e.message
+        }
+        ok('非 ZIP 给出明确错误', /不是.*ZIP/.test(zipErr))
+
+        /* ---------- 2. EPUB 结构 ---------- */
+        const book = await E.openEpub(epubBytes)
+        assertEq('书名取自 dc:title', book.title, '样例电子书')
+        assertEq('作者取自 dc:creator', book.author, '测试作者')
+        assertEq('章数（ghost.xhtml 在包里不存在，跳过）', book.chapters.length, 5)
+        assertEq('章路径', book.chapters.map((c) => c.path).join(','), 'OEBPS/text/ch1.xhtml,OEBPS/text/ch2.xhtml,OEBPS/text/ch3.xhtml,OEBPS/text/ch4.xhtml,OEBPS/text/notes.xhtml')
+        assertEq('封面取自 properties="cover-image"', book.coverPath, 'OEBPS/images/cover.png')
+        assertEq('大纲条数（含嵌套的 1 条）', book.outline.length, 5)
+        assertEq('第一章标题', book.outline[0].title, '第一章 晨读')
+        assertEq('第一章对到章序号 0', book.outline[0].pageIndex, 0)
+        assertEq('第二章有子目录', book.outline[1].children.length, 1)
+        assertEq('子目录标题', book.outline[1].children[0].title, '书桌的一角')
+        assertEq('子目录指向同一章', book.outline[1].children[0].pageIndex, 1)
+        assertEq('子目录带着锚点', book.outline[1].children[0].fragment, 'part2')
+        assertEq('附录排在最后', book.outline[4].title, '附：注释')
+        assertEq('章标题被目录回填', book.chapters[1].title, '第二章 茶与书桌')
+
+        const ncxBook = await E.openEpub(ncxBytes)
+        assertEq('EPUB2：书名', ncxBook.title, '样例电子书（NCX 版）')
+        assertEq('EPUB2：章数', ncxBook.chapters.length, 5)
+        assertEq('EPUB2：没有 nav 时回退 NCX', ncxBook.outline.length, 5)
+        assertEq('EPUB2：NCX 标题', ncxBook.outline[0].title, '第一章 晨读')
+        assertEq('EPUB2：NCX 嵌套子项', ncxBook.outline[1].children[0].fragment, 'part2')
+        assertEq('EPUB2：封面走 <meta name="cover">', ncxBook.coverPath, 'OEBPS/images/cover.png')
+        assertEq('EPUB2：manifest 里非 spine 的条目不进章节', ncxBook.chapters.some((c) => /nav/.test(c.path)), false)
+
+        let epubErr = ''
+        try {
+          await E.openEpub(epubBytes.slice(0, 40))
+        } catch (e) {
+          epubErr = e.message
+        }
+        ok('残缺文件给出明确错误', epubErr.length > 0)
+
+        /* ---------- 3. XHTML 清洗与分段 ---------- */
+        const raw1 = await E.readChapter(book, 0)
+        const c1 = await D.buildChapter({ html: raw1, chapterPath: book.chapters[0].path })
+        assertEq('第 1 章段数', c1.segs.length, 4)
+        assertEq('首段是标题且标了 level', `${c1.segs[0].kind}/${c1.segs[0].level}`, 'h/1')
+        assertEq('段文本不带缩进空白', c1.segs[1].text, '天刚亮的时候，屋子里的光还是灰的。我习惯先烧一壶水，再把昨天读到一半的书翻开。')
+        ok('内联标签 <em> 保留', c1.segs[2].html.includes('<em>'))
+        ok('内联标签 <strong> 保留', c1.segs[3].html.includes('<strong>'))
+        ok('来源里的换行/缩进被压掉', !c1.segs[2].text.includes('\n') && !c1.segs[2].text.includes('  '))
+        assertEq('段偏移首尾相接（每段后面计一个虚拟换行）', c1.segs[1].start, c1.segs[0].text.length + 1)
+        ok(
+          '偏移与章文本严格对得上',
+          c1.segs.every((s) => c1.text.slice(s.start, s.start + s.text.length) === s.text)
+        )
+        assertEq('章节纯文本 = 各段以换行相连', D.chapterTextOf(c1.segs), c1.segs.map((s) => s.text).join('\n'))
+
+        const raw2 = await E.readChapter(book, 1)
+        const c2 = await D.buildChapter({ html: raw2, chapterPath: book.chapters[1].path })
+        assertEq('第 2 章段数（标题 + 1 段 + 3 个 li + 2 段 + 内链段 + 换行段）', c2.segs.length, 9)
+        assertEq('li 带项目符号', c2.segs[2].bullet, '•')
+        assertEq('ul 里的 li 都带符号', c2.segs.slice(2, 5).every((s) => s.bullet === '•'), true)
+        assertEq('li 的 kind', c2.segs[2].kind, 'li')
+        ok('项目符号不进文本（偏移才不会错）', !c2.segs[2].text.startsWith('•'))
+        assertEq('容器 div 上的 id 归到它内部的第一段', c2.ids.get('part2'), 5)
+        assertEq('叶子段落上的 id 归到自己那一段', c2.ids.get('par3'), 6)
+        assertEq('锚点段落的偏移对得上', c2.text.slice(c2.segs[5].start, c2.segs[5].start + 5), '书桌的一角')
+        ok('内链被改造成 data-frag（不能留 <a href="#...">，会动 hash 路由）', c2.segs[7].html.includes('data-frag="#par3"') && !c2.segs[7].html.includes('<a '))
+        assertEq('data-frag 不改动文本', c2.segs[7].text, '如果想从这里开始读，可以跳到那一句。')
+        ok('换行 <br> 留在段内且不产生字符', c2.segs[8].html.includes('<br') && !c2.segs[8].text.includes('\n'))
+        ok(
+          '段文本里没有任何 HTML 标签残留（text 只管字符）',
+          c2.segs.every((s) => !/[<>]/.test(s.text))
+        )
+
+        // 表格 / 引用 / 嵌套列表这类容器不能把块级元素渲染进 <p>
+        const nest = await D.buildChapter({
+          html: '<html><body><blockquote><p>引文一</p><p>引文二</p></blockquote><ol><li>甲</li><li>乙</li></ol></body></html>',
+        })
+        assertEq('引用拆成两段', nest.segs.filter((s) => s.kind === 'quote').length, 2)
+        assertEq('有序列表编号', nest.segs.filter((s) => s.kind === 'li').map((s) => s.bullet).join(','), '1.,2.')
+        ok('没有任何段包含块级子元素', nest.segs.every((s) => !/<(p|div|ul|ol|li|h[1-6])[\s>]/i.test(s.html)))
+
+        // 脚本 / 样式 / 属性清洗
+        const raw3 = await E.readChapter(book, 2)
+        const seen = []
+        const c3 = await D.buildChapter({
+          html: raw3,
+          chapterPath: book.chapters[2].path,
+          getResource: async (p) => {
+            seen.push(p)
+            return p.endsWith('pic.png') ? 'blob:fake-pic' : null
+          },
+        })
+        assertEq('图片按相对章路径解析', seen.join(','), 'OEBPS/images/pic.png,OEBPS/images/missing.png')
+        ok('拿不到 URL 的图片被丢掉', !c3.segs.some((s) => s.html.includes('missing')))
+        ok('拿到 URL 的图片写回了 src', c3.segs.some((s) => s.html.includes('src="blob:fake-pic"')))
+        ok('script 整段被删', !c3.segs.some((s) => /script|__epubEvil/.test(s.html + s.text)))
+        ok('class 与 style 属性被清掉', !c3.segs.some((s) => /class=|style=/.test(s.html)))
+        ok('clean 后正文还读得下去', c3.text.includes('脚本被清掉之后'))
+        assertEq('段落计数（丢图那一整段也不留）', c3.segs.length, 5)
+
+        /* ---------- 4. 高亮回填 ---------- */
+        const seg = c1.segs[1]
+        const marked = D.markedHtml(seg.html, seg.start, [{ id: 7, color: 'green', from: seg.start + 3, to: seg.start + 9 }])
+        const holder = document.createElement('div')
+        holder.innerHTML = marked
+        assertEq('包出了一个 mark', holder.querySelectorAll('mark[data-hl]').length, 1)
+        assertEq('颜色写进去了', holder.querySelector('mark').getAttribute('data-color'), 'green')
+        assertEq('mark 的文本就是选中的那一段', holder.querySelector('mark').textContent, seg.text.slice(3, 9))
+        assertEq('回填不改动总文本（偏移才不会漂）', holder.textContent, seg.text)
+        assertEq('mark 外面的文本也没变', holder.textContent.slice(0, 3) + holder.textContent.slice(9), seg.text.slice(0, 3) + seg.text.slice(9))
+
+        // 跨段高亮：每个段各包自己那一截
+        const hit = { id: 9, color: 'blue', from: c1.segs[1].start + 10, to: c1.segs[2].start + 4 }
+        const m1 = D.markedHtml(c1.segs[1].html, c1.segs[1].start, [hit])
+        const m2 = D.markedHtml(c1.segs[2].html, c1.segs[2].start, [hit])
+        const h1 = document.createElement('div')
+        h1.innerHTML = m1
+        const h2 = document.createElement('div')
+        h2.innerHTML = m2
+        assertEq('跨段：前一段包到段尾', h1.querySelector('mark').textContent, c1.segs[1].text.slice(10))
+        assertEq('跨段：后一段从段首开始', h2.querySelector('mark').textContent, c1.segs[2].text.slice(0, 4))
+        assertEq('跨段：两段各自的总文本不变', h1.textContent + '|' + h2.textContent, c1.segs[1].text + '|' + c1.segs[2].text)
+
+        // 与本段无关的高亮不该出现
+        assertEq('区间在段外时原样返回', D.markedHtml(seg.html, seg.start, [{ id: 1, from: 0, to: 2 }]), seg.html)
+        // 重叠区间只渲染靠前的一个
+        const ov = D.markedHtml(
+          'abcdef',
+          0,
+          [
+            { id: 1, color: 'yellow', from: 1, to: 4 },
+            { id: 2, color: 'blue', from: 2, to: 5 },
+          ]
+        )
+        assertEq('重叠只包一层', (ov.match(/<mark/g) || []).length, 1)
+
+        dump()
+        log(failed ? 'RESULT: FAIL (' + failed + ' 条断言未过)' : 'RESULT: PASS')
+        log('ALL DONE')
+      } catch (e) {
+        log('THROWN: ' + (e && e.message ? e.message : e))
+        log('stack: ' + (e && e.stack ? String(e.stack).split('\n').slice(0, 4).join(' | ') : ''))
+        dump()
+        log('ALL DONE')
+      }
+    </script>
+  </body>
+</html>

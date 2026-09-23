@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>History stack test</title>
+    <style>
+      body { font: 12px/1.5 monospace; padding: 12px; margin: 0; }
+      #host { width: 720px; height: 520px; position: relative; border: 1px solid #888; }
+      #log { position: fixed; right: 0; top: 0; width: 540px; height: 100vh; background: #fff; z-index: 99999; padding: 10px; overflow: auto; border-left: 1px solid #ccc; }
+    </style>
+  </head>
+  <body>
+    <div id="host"></div>
+    <div id="probe"></div>
+    <div id="log"></div>
+    <script>
+      window.__errs = []
+      window.addEventListener('error', (e) => {
+        window.__errs.push('WINDOW ERROR: ' + (e.message || e.error) + ' @ ' + (e.filename || '') + ':' + (e.lineno || ''))
+      })
+      window.addEventListener('unhandledrejection', (e) =>
+        window.__errs.push('REJECTION: ' + (e.reason && e.reason.message ? e.reason.message : e.reason))
+      )
+    </script>
+    <script type="module">
+      import '/src/styles.css'
+
+      const ENDPOINT = 'http://127.0.0.1:5178/log'
+      const IN_TARGET = location.pathname.endsWith('dev-history.html')
+      const log = (m) => {
+        document.getElementById('log').innerHTML += `<div>${m}</div>`
+        if (IN_TARGET) { try { fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true }) } catch {} }
+      }
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+      const dump = () => window.__errs.forEach((e) => log(e))
+      let failed = 0
+      const assertEq = (label, got, want) => {
+        const pass = got === want
+        if (!pass) failed++
+        log(`${pass ? 'ok  ' : 'BAD '}${label}: ${JSON.stringify(got)}` + (pass ? '' : ' (want ' + JSON.stringify(want) + ')'))
+      }
+      const ok = (label, cond) => {
+        if (!cond) failed++
+        log(`${cond ? 'ok  ' : 'BAD '}${label}`)
+      }
+      const until = async (fn, ms = 5000, step = 50) => {
+        const t0 = Date.now()
+        for (;;) {
+          const v = fn()
+          if (v) return v
+          if (Date.now() - t0 > ms) return null
+          await sleep(step)
+        }
+      }
+
+      try {
+        log('boot')
+
+        const db = (await import('/src/db.js')).db
+        const { importFile } = await import('/src/lib/importer.js')
+        const React = (await import('react')).default
+        const { createRoot } = await import('react-dom/client')
+        const useHistoryStack = (await import('/src/hooks/useHistoryStack.js')).default
+        const PdfReader = (await import('/src/components/PdfReader.jsx')).default
+        const TxtReader = (await import('/src/components/TxtReader.jsx')).default
+        const T = await import('/src/lib/txtText.js')
+
+        await db.delete()
+        await db.open()
+        log('db cleared')
+
+        const host = document.getElementById('host')
+        const makeRoot = () => createRoot(host)
+        // 两个阅读器都把「当前页 / 总页数」渲染在 .scrub-num，一个 helper 通吃
+        const readNums = () => {
+          const el = host.querySelector('.scrub-num')
+          if (!el) return null
+          const m = el.textContent.match(/(\d+)\s*\/\s*(\d+)/)
+          return m ? { page: Number(m[1]), pages: Number(m[2]) } : null
+        }
+        // 回退按钮靠 aria-label 找，避免和「返回」的文案纠缠
+        const backBtns = () =>
+          [...host.querySelectorAll('.reader-top .btn')].filter(
+            (b) => b.getAttribute('aria-label') === '回到跳转前的位置'
+          )
+        const topBtn = (t) => [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.includes(t))
+        const altLeft = () =>
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true }))
+        const openOutlineAndClick = async (needle) => {
+          topBtn('面板').click()
+          await until(() => host.querySelector('.outline-item'))
+          const item = [...host.querySelectorAll('.outline-item')].find((b) => b.textContent.includes(needle))
+          if (!item) throw new Error('目录里找不到：' + needle)
+          item.click()
+          await sleep(120)
+        }
+
+        /* ================= 1. useHistoryStack 本身 ================= */
+        let h = null
+        function Probe() {
+          h = useHistoryStack({ limit: 3 })
+          return null
+        }
+        createRoot(document.getElementById('probe')).render(React.createElement(Probe))
+        await until(() => h)
+        ok('hook 可用', !!h)
+        assertEq('初始深度', h.depth, 0)
+        assertEq('初始不能回退', h.canBack, false)
+
+        h.push({ page: 3 })
+        await sleep(30)
+        assertEq('push 后深度', h.depth, 1)
+        assertEq('push 后可回退', h.canBack, true)
+
+        h.push({ page: 7 })
+        await sleep(30)
+        assertEq('再 push 深度', h.depth, 2)
+        assertEq('先弹出后进的（LIFO）', h.pop()?.page, 7)
+        await sleep(30)
+        assertEq('弹出后深度', h.depth, 1)
+        assertEq('再弹出先进的', h.pop()?.page, 3)
+        await sleep(30)
+        assertEq('弹空后返回 null', h.pop(), null)
+        assertEq('弹空后不能回退', h.canBack, false)
+        assertEq('push(null) 不入栈', h.push(null), false)
+
+        for (const p of [1, 2, 3, 4, 5]) h.push({ page: p })
+        await sleep(50)
+        assertEq('超出 limit 后只留 limit 条', h.depth, 3)
+        assertEq('留下的是最近的 3 条', [h.pop()?.page, h.pop()?.page, h.pop()?.page].join(','), '5,4,3')
+
+        h.push({ page: 9 })
+        h.clear()
+        await sleep(30)
+        assertEq('clear 后深度归零', h.depth, 0)
+
+        /* ================= 2. PDF 阅读器 ================= */
+        const pdfBytes = await (await fetch('/@fs/D:/book-reader/samples/sample.pdf')).arrayBuffer()
+        const pdfBook = await importFile(new File([pdfBytes], 'sample.pdf', { type: 'application/pdf' }))
+        log('importFile(pdf) -> ' + pdfBook.id + ' (' + pdfBook.status + ', ' + pdfBook.format + ')')
+        assertEq('PDF 识别为 pdf', pdfBook.format, 'pdf')
+
+        let root = makeRoot()
+        root.render(React.createElement(PdfReader, { bookId: pdfBook.id, title: 'sample', onBack() {} }))
+        ok('PDF 阅读器打开', await until(() => readNums(), 15000))
+        await until(() => readNums()?.page === 1, 4000)
+        assertEq('PDF 起始在第 1 页', readNums()?.page, 1)
+        assertEq('PDF 初始没有回退按钮', backBtns().length, 0)
+
+        await openOutlineAndClick('Chapter 3')
+        const pdfJumped = await until(() => (readNums()?.page === 5 ? true : null), 4000)
+        ok('点目录跳到第 5 页', !!pdfJumped)
+        assertEq('跳转后出现回退按钮', backBtns().length, 1)
+
+        backBtns()[0].click()
+        const pdfBack = await until(() => (readNums()?.page === 1 ? true : null), 4000)
+        ok('点回退回到跳转前的第 1 页', !!pdfBack)
+        assertEq('栈空后按钮消失', backBtns().length, 0)
+
+        // 快捷键：Alt+←
+        await openOutlineAndClick('Chapter 3')
+        await until(() => (readNums()?.page === 5 ? true : null), 4000)
+        altLeft()
+        const pdfAlt = await until(() => (readNums()?.page === 1 ? true : null), 4000)
+        ok('Alt+← 也能回退', !!pdfAlt)
+
+        // 连跳两次 → 后退两次，顺序必须反过来
+        await openOutlineAndClick('Chapter 2')
+        await until(() => (readNums()?.page === 3 ? true : null), 4000)
+        await openOutlineAndClick('Chapter 3')
+        await until(() => (readNums()?.page === 5 ? true : null), 4000)
+        assertEq('连跳两次后深度', backBtns().length, 1)
+        backBtns()[0].click()
+        ok('第一次回退到第 3 页', !!(await until(() => (readNums()?.page === 3 ? true : null), 4000)))
+        backBtns()[0].click()
+        ok('第二次回退到第 1 页', !!(await until(() => (readNums()?.page === 1 ? true : null), 4000)))
+        assertEq('退完后按钮消失', backBtns().length, 0)
+
+        root.unmount()
+        await sleep(150)
+
+        /* ================= 3. TXT 阅读器 ================= */
+        const txtBytes = await (await fetch('/@fs/D:/book-reader/samples/sample-utf8.txt')).arrayBuffer()
+        const txtBook = await importFile(new File([txtBytes], 'sample-utf8.txt', { type: 'text/plain' }))
+        log('importFile(txt) -> ' + txtBook.id + ' (' + txtBook.format + ', ' + txtBook.chapters + ' 章)')
+        assertEq('TXT 识别为 txt', txtBook.format, 'txt')
+
+        const text = T.decodeBytes(new Uint8Array(txtBytes)).text
+        const chapters = T.splitChapters(text)
+
+        root = makeRoot()
+        root.render(React.createElement(TxtReader, { bookId: txtBook.id, title: 'sample', onBack() {} }))
+        ok('TXT 阅读器打开', await until(() => host.querySelector('.txt-p'), 8000))
+        const vp = () => host.querySelector('.txt-viewport')
+        // 翻页用的是平滑滚动，必须等 scrollLeft 停下来再读，否则量到的是半路的位置
+        const settle = async () => {
+          let last = -1
+          for (let i = 0; i < 40; i++) {
+            const v = Math.round(vp()?.scrollLeft || 0)
+            if (v === last) return v
+            last = v
+            await sleep(60)
+          }
+          return last
+        }
+        const chapNo = () => Number((host.querySelector('.scrub-chap')?.textContent || '').match(/第\s*(\d+)/)?.[1] || 0)
+        const pos = () => ({ chap: chapNo(), page: readNums()?.page, scroll: Math.round(vp()?.scrollLeft || 0) })
+        await sleep(200)
+        assertEq('TXT 起始在第 1 章', pos().chap, 1)
+        assertEq('TXT 初始没有回退按钮', backBtns().length, 0)
+
+        // 目录跳到第 4 章（第十二章 夜谈是第 4 章）
+        await openOutlineAndClick('第十二章')
+        const c4 = chapters[3]
+        ok('点目录跳到第 4 章', !!(await until(() => Number(host.querySelector('.txt-p').dataset.start) === c4.start, 3000)))
+        assertEq('跳到第 4 章后出现回退按钮', backBtns().length, 1)
+
+        // 点目录跳到自己已经在的章 → 不该再进栈（否则回退一次没动静）
+        await openOutlineAndClick('第十二章')
+        await sleep(200)
+        assertEq('重复跳同一章不入栈', backBtns().length, 1)
+
+        // 章内翻一页，制造「非章首」的位置
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+        const inChap2 = await until(() => (readNums()?.page === 2 ? true : null), 3000)
+        ok('第 4 章内翻到第 2 页', !!inChap2)
+        await settle()
+        const mark = pos()
+        log('第 4 章第 2 页位置: ' + JSON.stringify(mark))
+
+        // 再跳到别的章 → 回退必须回到「第 4 章第 2 页」，而不是第 4 章章首
+        await openOutlineAndClick('第2章')
+        ok('跳到第 2 章', !!(await until(() => chapNo() === 3, 3000)))
+        assertEq('连跳后深度仍是 1', backBtns().length, 1)
+
+        backBtns()[0].click()
+        const backOk = await until(() => (chapNo() === mark.chap && readNums()?.page === mark.page ? true : null), 4000)
+        ok('回退回到第 4 章第 2 页（不是章首）', !!backOk)
+        await settle()
+        assertEq('落点栏位也对上', Math.abs(pos().scroll - mark.scroll) <= 2, true)
+
+        // 再退一次 → 回到第 1 章（栈底）
+        backBtns()[0].click()
+        ok('再退一次回到第 1 章', !!(await until(() => chapNo() === 1, 4000)))
+        assertEq('退到栈底后按钮消失', backBtns().length, 0)
+
+        // 快捷键：Alt+←
+        await openOutlineAndClick('第十二章')
+        await until(() => chapNo() === 4, 3000)
+        altLeft()
+        ok('TXT 里 Alt+← 也能回退', !!(await until(() => chapNo() === 1, 4000)))
+
+        // 翻页不进栈：翻两页后不该冒出回退按钮
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+        await sleep(300)
+        assertEq('翻页不进栈', backBtns().length, 0)
+
+        root.unmount()
+
+        dump()
+        log(failed ? 'RESULT: FAIL (' + failed + ' 条断言未过)' : 'RESULT: PASS')
+        log('ALL DONE')
+      } catch (e) {
+        log('THROWN: ' + (e && e.message ? e.message : e))
+        log('stack: ' + (e && e.stack ? String(e.stack).split('\n').slice(0, 4).join(' | ') : ''))
+        dump()
+        log('ALL DONE')
+      }
+    </script>
+  </body>
+</html>

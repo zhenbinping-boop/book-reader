@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>TXT reader test</title>
+    <style>
+      body { font: 12px/1.5 monospace; padding: 12px; margin: 0; }
+      #host { width: 720px; height: 520px; position: relative; border: 1px solid #888; }
+      #log { position: fixed; right: 0; top: 0; width: 540px; height: 100vh; background: #fff; z-index: 99999; padding: 10px; overflow: auto; border-left: 1px solid #ccc; }
+    </style>
+  </head>
+  <body>
+    <div id="host"></div>
+    <div id="log"></div>
+    <script>
+      window.__errs = []
+      window.addEventListener('error', (e) => {
+        window.__errs.push('WINDOW ERROR: ' + (e.message || e.error) + ' @ ' + (e.filename || '') + ':' + (e.lineno || ''))
+      })
+      window.addEventListener('unhandledrejection', (e) =>
+        window.__errs.push('REJECTION: ' + (e.reason && e.reason.message ? e.reason.message : e.reason))
+      )
+    </script>
+    <script type="module">
+      import '/src/styles.css'
+
+      const ENDPOINT = 'http://127.0.0.1:5178/log'
+      const IN_TARGET = location.pathname.endsWith('dev-txt.html')
+      const log = (m) => {
+        document.getElementById('log').innerHTML += `<div>${m}</div>`
+        if (IN_TARGET) { try { fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true }) } catch {} }
+      }
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+      const dump = () => window.__errs.forEach((e) => log(e))
+      let failed = 0
+      const assertEq = (label, got, want) => {
+        const pass = got === want
+        if (!pass) failed++
+        log(`${pass ? 'ok  ' : 'BAD '}${label}: ${JSON.stringify(got)}` + (pass ? '' : ' (want ' + JSON.stringify(want) + ')'))
+      }
+      const ok = (label, cond) => {
+        if (!cond) failed++
+        log(`${cond ? 'ok  ' : 'BAD '}${label}`)
+      }
+      const until = async (fn, ms = 5000, step = 50) => {
+        const t0 = Date.now()
+        for (;;) {
+          const v = fn()
+          if (v) return v
+          if (Date.now() - t0 > ms) return null
+          await sleep(step)
+        }
+      }
+
+      try {
+        log('boot')
+
+        const T = await import('/src/lib/txtText.js')
+        const S = await import('/src/lib/txtSel.js')
+        const dbmod = await import('/src/db.js')
+        const { importTxt } = await import('/src/lib/importer.js')
+        const { db } = dbmod
+        const React = (await import('react')).default
+        const { createRoot } = await import('react-dom/client')
+        const TxtReader = (await import('/src/components/TxtReader.jsx')).default
+
+        await db.delete()
+        await db.open()
+        log('db cleared')
+
+        /* ---------- 1. 解码：UTF-8 与 GB18030 ---------- */
+        const utf8Bytes = new Uint8Array(await (await fetch('/@fs/D:/book-reader/samples/sample-utf8.txt')).arrayBuffer())
+        const gbkBytes = new Uint8Array(await (await fetch('/@fs/D:/book-reader/samples/sample-gbk.txt')).arrayBuffer())
+        log('sample bytes: utf8=' + utf8Bytes.length + ' gbk=' + gbkBytes.length)
+
+        const du = T.decodeBytes(utf8Bytes)
+        const dg = T.decodeBytes(gbkBytes)
+        assertEq('UTF-8 样本编码判定', du.encoding, 'utf-8')
+        assertEq('GB18030 样本编码判定', dg.encoding, 'gb18030')
+        assertEq('两种编码解出的文本完全一致', dg.text === du.text, true)
+        ok('GB18030 没丢字（含中文）', dg.text.includes('屋檐的水滴声'))
+
+        // 小而确定的负例：这 4 个字节是「中文」的 GBK 编码，不是合法 UTF-8
+        const tiny = T.decodeBytes(new Uint8Array([0xd6, 0xd0, 0xce, 0xc4]))
+        assertEq('非法 UTF-8 落到 gb18030', tiny.encoding, 'gb18030')
+        assertEq('GBK 短样本解码正确', tiny.text, '中文')
+
+        // BOM 与 CRLF
+        const bom = T.decodeBytes(new Uint8Array([0xef, 0xbb, 0xbf, 0x61, 0x0d, 0x0a, 0x62]))
+        assertEq('UTF-8 BOM 被吃掉', bom.text, 'a\nb')
+        assertEq('CRLF 归一成 LF 且只算一个字符', bom.text.length, 3)
+
+        const text = du.text
+
+        /* ---------- 2. 分章 ---------- */
+        assertEq('isChapterTitle 第1章', T.isChapterTitle('第1章 出发'), true)
+        assertEq('isChapterTitle 第十二章', T.isChapterTitle('第十二章 夜谈'), true)
+        assertEq('isChapterTitle Chapter 3', T.isChapterTitle('Chapter 3 The Road'), true)
+        assertEq('isChapterTitle 3. 归途', T.isChapterTitle('3. 归途'), true)
+        assertEq(
+          'isChapterTitle 排除正文里的「第三章的故事，……」',
+          T.isChapterTitle('第三章的故事，要从很久以前说起。'),
+          false
+        )
+        assertEq(
+          'isChapterTitle 排除「第一，……第二，……」',
+          T.isChapterTitle('第一，他不知道该怎么办。第二，他也不想问。'),
+          false
+        )
+        assertEq('isChapterTitle 普通正文不认', T.isChapterTitle('这是一句普通的正文。'), false)
+
+        const chapters = T.splitChapters(text)
+        assertEq('章数（4 章 + 前言）', chapters.length, 5)
+        assertEq('章标题', chapters.map((c) => c.title).join('|'), '开始|第1章 出发|第2章 山中|第十二章 夜谈|第4章 归途')
+        ok('偏移首尾相接', chapters.every((c, i) => (i ? c.start === chapters[i - 1].end : c.start === 0) && c.end > c.start))
+        assertEq('最后一章收在文末', chapters[chapters.length - 1].end, text.length)
+        ok(
+          '每章开头就是标题本身',
+          chapters.slice(1).every((c) => text.startsWith(c.title, c.start))
+        )
+
+        // 没有章节标记的书 → 按字数兜底
+        const plain = T.splitChapters('只有正文。'.repeat(700))
+        ok('无章节标记时按字数兜底（' + plain.length + ' 节）', plain.length > 1 && plain[0].title.startsWith('第'))
+
+        /* ---------- 3. 段落与偏移映射 ---------- */
+        const c1 = chapters[1]
+        const segs = T.paragraphsOf(text, c1.start, c1.end)
+        assertEq('第 1 章段数（标题 + 24 段）', segs.length, 25)
+        assertEq('首段起点 = 章起点', segs[0].start, c1.start)
+        assertEq('首段文字 = 章标题', segs[0].text, '第1章 出发')
+        ok('段落文字与原文切片逐字一致', segs.every((s) => text.slice(s.start, s.start + s.text.length) === s.text))
+        ok('段落里不含换行', segs.every((s) => !s.text.includes('\n')))
+        ok('段落按偏移递增', segs.every((s, i) => i === 0 || s.start > segs[i - 1].start))
+
+        const target = segs[7]
+        assertEq('segmentAt 命中段中', T.segmentAt(segs, target.start + 3), 7)
+        assertEq('segmentAt 命中段首', T.segmentAt(segs, target.start), 7)
+        assertEq('segmentAt 落在段间（换行）归前一段', T.segmentAt(segs, target.start + target.text.length + 1), 7)
+
+        /* ---------- 4. 搜索 ---------- */
+        const hits = T.searchChapters(text, chapters, '屋檐的水滴声')
+        ok('搜到「屋檐的水滴声」', hits.length >= 1)
+        {
+          const h = hits[0]
+          const c = chapters[h.page]
+          assertEq('命中落在正确的章', c.title, '第1章 出发')
+          assertEq('命中的章内偏移能切回原文', text.slice(c.start + h.from, c.start + h.to), '屋檐的水滴声')
+        }
+        // 跨行断词：把上一段结尾与下一段开头拼起来（中间本来有换行）也要能搜到
+        const a = segs[5].text.slice(-8)
+        const b = segs[6].text.slice(0, 8)
+        const cross = T.searchChapters(text, chapters, a + b)
+        ok('跨段（含换行）的短语能搜到', cross.length >= 1)
+        if (cross.length) {
+          const c = chapters[cross[0].page]
+          assertEq('跨段命中的起点正确', text.slice(c.start + cross[0].from, c.start + cross[0].from + a.length), a)
+        }
+        assertEq('空查询返回空', T.searchChapters(text, chapters, '   ').length, 0)
+
+        /* ---------- 5. 导入 ---------- */
+        const file = new File([utf8Bytes], 'sample-utf8.txt', { type: 'text/plain' })
+        const r1 = await importTxt(file)
+        assertEq('导入状态', r1.status, 'added')
+        assertEq('识别章数', r1.chapters, 5)
+        assertEq('识别编码', r1.encoding, 'utf-8')
+        const id = r1.id
+        const book = await db.books.get(id)
+        assertEq('books.format', book.format, 'txt')
+        assertEq('pageCount 记的是章数', book.pageCount, 5)
+        ok('指纹已写入', typeof book.fileHash === 'string' && book.fileHash.length > 10)
+
+        // 换一种编码 = 另一份文件（指纹按字节算），所以是新书而不是重复
+        const r2 = await importTxt(new File([gbkBytes], 'sample-gbk.txt', { type: 'text/plain' }))
+        assertEq('GB18030 文件导入成功', r2.status, 'added')
+        assertEq('GB18030 文件识别编码', r2.encoding, 'gb18030')
+        assertEq('GB18030 文件章数一致', r2.chapters, 5)
+        ok('GB18030 书的正文没丢字', (await db.blobs.get(r2.id)) && true)
+
+        /* ---------- 6. 真实挂载阅读器 ---------- */
+        const host = document.getElementById('host')
+        // React 19：unmount 过的 root 不能再 render，重挂必须新建一个
+        const makeRoot = () => {
+          const r = createRoot(host)
+          r.render(
+            React.createElement(TxtReader, { bookId: id, title: 'sample', onBack: () => {} })
+          )
+          return r
+        }
+        let root = makeRoot()
+
+        const readPageLabel = () => {
+          const el = host.querySelector('.scrub-num')
+          if (!el) return null
+          const m = el.textContent.match(/(\d+)\s*\/\s*(\d+)/)
+          return m ? { page: Number(m[1]), pages: Number(m[2]) } : null
+        }
+        const vp = () => host.querySelector('.txt-viewport')
+        const cols = () => host.querySelector('.txt-columns')
+        const btn = (text) =>
+          [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.includes(text))
+        // 某个绝对偏移落在第几栏 —— 用来断言「位置没跑」
+        const colOfOffset = (offset, list) => {
+          const el = vp()
+          const cs = cols()
+          const idx = T.segmentAt(list, offset)
+          if (!el || !cs || idx < 0) return null
+          return S.columnAt(cs.children[idx], {
+            left: el.getBoundingClientRect().left,
+            scrollLeft: el.scrollLeft,
+            colW: cs.clientWidth,
+            gap: 40,
+          })
+        }
+        const currentPage = () => Number(readPageLabel().page) - 1
+        // 当前页最上面那个段落的绝对偏移
+        const firstVisibleStart = () => {
+          const el = vp()
+          const cs = cols()
+          const colW = cs?.clientWidth
+          if (!el || !colW) return null
+          const geo = { left: el.getBoundingClientRect().left, scrollLeft: el.scrollLeft, colW, gap: 40 }
+          const page = Math.round(el.scrollLeft / (colW + 40))
+          for (const p of cs.children) if (S.columnAt(p, geo) === page) return Number(p.dataset.start)
+          return null
+        }
+
+        // 新书没有进度 → 从第 1 章开始，而第 1 章是标题前的那段前言（只有 2 行）
+        const firstP = await until(() => host.querySelector('.txt-p'))
+        ok('阅读器挂载并渲染出正文', !!firstP)
+        if (!firstP) throw new Error('阅读器没渲染出来')
+
+        const ch0 = T.paragraphsOf(text, chapters[0].start, chapters[0].end)
+        assertEq('前言章段数', host.querySelectorAll('.txt-p').length, ch0.length)
+        assertEq('前言章只有 1 页', readPageLabel().pages, 1)
+        assertEq('前言章起点偏移', Number(host.querySelector('.txt-p').dataset.start), chapters[0].start)
+        assertEq(
+          '顶栏章序号与进度',
+          host.querySelector('.txt-head-sub').textContent.replace(/\s/g, ''),
+          '第1/5章·20%'
+        )
+
+        // 进正文：点「下一章」
+        btn('下一章').click()
+        ok('切到第 1 章', await until(() => host.querySelectorAll('.txt-p').length === segs.length, 3000))
+        assertEq('第 1 章首段 = 章标题', Number(host.querySelector('.txt-p').dataset.start), c1.start)
+        assertEq('首段用章标题样式', host.querySelector('.txt-p').className.includes('txt-p-title'), true)
+        ok('顶栏显示章标题', host.querySelector('.txt-head-title').textContent.includes('第1章 出发'))
+
+        const p1 = readPageLabel()
+        log('第 1 章页码: ' + JSON.stringify(p1))
+        ok('分栏分页生效（本章 ' + (p1 ? p1.pages : '?') + ' 页）', p1 && p1.pages >= 2)
+        ok('多栏确实横向溢出', cols().scrollWidth > vp().clientWidth + 40)
+        assertEq('从第 1 页开始', p1.page, 1)
+
+        // 点右侧 1/3 → 下一页
+        const rc = vp().getBoundingClientRect()
+        vp().dispatchEvent(new MouseEvent('click', { clientX: rc.right - 12, clientY: rc.top + 40, bubbles: true }))
+        const p2 = await until(() => { const v = readPageLabel(); return v && v.page === 2 ? v : null }, 2500)
+        ok('点右侧翻到下一页', !!p2)
+
+        // 点左侧 1/3 → 回上一页
+        vp().dispatchEvent(new MouseEvent('click', { clientX: rc.left + 12, clientY: rc.top + 40, bubbles: true }))
+        const p3 = await until(() => { const v = readPageLabel(); return v && v.page === 1 ? v : null }, 2500)
+        ok('点左侧回上一页', !!p3)
+
+        // 键盘翻页（TXT 没有 PDF 那种「滚动模式下方向键无效」的限制）
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+        const p4 = await until(() => { const v = readPageLabel(); return v && v.page === 2 ? v : null }, 2500)
+        ok('方向键翻页生效', !!p4)
+
+        /* ---------- 7. 进度落盘 ---------- */
+        await sleep(1000)
+        const prog = await db.progress.get(id)
+        log('progress = ' + JSON.stringify({ chapterIndex: prog.chapterIndex, charOffset: prog.charOffset, page: prog.page, started: prog.started }))
+        assertEq('进度记的是章序号', prog.chapterIndex, 1)
+        assertEq('started 已置 true', prog.started, true)
+        assertEq('page 同步成第几章（书架百分比用）', prog.page, 2)
+        ok('记下了章内字符偏移（>0）', prog.charOffset > 0)
+        const savedOffset = prog.charOffset
+        const savedPage = p4.page
+
+        /* ---------- 8. 重新进入恢复位置 ---------- */
+        root.unmount()
+        await sleep(150)
+        root = makeRoot()
+        await until(() => host.querySelector('.scrub-num'))
+        const p5 = await until(() => { const v = readPageLabel(); return v && v.page === savedPage ? v : null }, 3000)
+        ok('重新进入回到离开时的第 ' + savedPage + ' 页', !!p5)
+        // 真正的判据：落盘锚点所在的那一段，必须仍显示在当前页上
+        {
+          const col = colOfOffset(c1.start + savedOffset, segs)
+          log('恢复校验：锚点段在第 ' + col + ' 栏，当前第 ' + currentPage() + ' 页')
+          assertEq('恢复后锚点段就在当前页', col, currentPage())
+        }
+
+        /* ---------- 9. 换章 ---------- */
+        const c2 = chapters[2]
+        const segs2 = T.paragraphsOf(text, c2.start, c2.end)
+        ok('找到「下一章」按钮', !!btn('下一章'))
+        btn('下一章').click()
+        const ok2 = await until(() => (host.querySelectorAll('.txt-p').length === segs2.length ? true : null), 3000)
+        ok('切到第 2 章（' + segs2.length + ' 段）', !!ok2)
+        assertEq('第 2 章首段 = 章标题', Number(host.querySelector('.txt-p').dataset.start), c2.start)
+        const p6 = readPageLabel()
+        assertEq('换章后回到该章第 1 页', p6.page, 1)
+        ok('底栏章序号同步', host.querySelector('.scrub-chap').textContent.includes('3/5'))
+
+        // 目录里跳章
+        await sleep(50)
+        const panelBtn = [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.includes('面板'))
+        panelBtn.click()
+        const outlineItems = await until(() => {
+          const list = host.querySelectorAll('.outline-item')
+          return list.length >= 5 ? list : null
+        })
+        ok('目录列出全部章节', !!outlineItems)
+        const jumpTo = [...host.querySelectorAll('.outline-item')].find((b) => b.textContent.includes('第十二章'))
+        ok('目录里能点到「第十二章 夜谈」', !!jumpTo)
+        jumpTo.click()
+        const c3 = chapters[3]
+        const ok3 = await until(() => host.querySelector('.txt-p') && host.querySelector('.txt-p').dataset.start === String(c3.start), 3000)
+        ok('点目录跳到第 3 章', !!ok3)
+
+        /* ---------- 10. 划词高亮的位置换算 ---------- */
+        const c3segs = T.paragraphsOf(text, c3.start, c3.end)
+        const segEl = host.querySelectorAll('.txt-p')[4]
+        const segStart = Number(segEl.dataset.start)
+        const textNode = segEl.firstChild.nodeType === 3 ? segEl.firstChild : segEl.firstChild.firstChild
+        const range = document.createRange()
+        range.setStart(textNode, 2)
+        range.setEnd(textNode, 10)
+        const sel = window.getSelection()
+        sel.removeAllRanges()
+        sel.addRange(range)
+        const picked = S.selectionOffsets(cols())
+        ok('选中内容被识别', !!picked)
+        assertEq('选中文字正确', picked.text, segEl.textContent.slice(2, 10))
+        assertEq('选区起点 = 段起 + 2', picked.from, segStart + 2)
+        assertEq('选区终点 = 段起 + 10', picked.to, segStart + 10)
+
+        const marked = S.splitByMarks(segEl.textContent, segStart, [{ id: 1, color: 'yellow', from: segStart + 2, to: segStart + 10 }])
+        assertEq('高亮切成 3 段（前 / 标记 / 后）', marked.length, 3)
+        assertEq('中间那段就是选中文字', marked[1].text, picked.text)
+        ok('标记带上颜色', marked[1].mark && marked[1].mark.color === 'yellow')
+        assertEq('拼接回去等于原文', marked.map((m) => m.text).join(''), segEl.textContent)
+
+        // 跨段落的高亮：区间横跨两段，两段各自都要有标记
+        const s4 = Number(host.querySelectorAll('.txt-p')[4].dataset.start)
+        const s5 = Number(host.querySelectorAll('.txt-p')[5].dataset.start)
+        const m4 = S.splitByMarks(host.querySelectorAll('.txt-p')[4].textContent, s4, [{ id: 2, color: 'blue', from: s4 + 5, to: s5 + 3 }])
+        const m5 = S.splitByMarks(host.querySelectorAll('.txt-p')[5].textContent, s5, [{ id: 2, color: 'blue', from: s4 + 5, to: s5 + 3 }])
+        ok('跨段落高亮：前段有标记', m4.some((x) => x.mark))
+        ok('跨段落高亮：后段有标记', m5.some((x) => x.mark))
+
+        sel.removeAllRanges()
+
+        /* ---------- 11. 外观设置 ---------- */
+        const aa = [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === 'Aa')
+        ok('找到 Aa 按钮', !!aa)
+        aa.click()
+        const rows = await until(() => {
+          const r2 = document.querySelectorAll('.appearance-row')
+          return r2.length === 4 ? r2 : null
+        })
+        ok('外观面板有 4 个滑杆（字号/行距/段距/页边距）', !!rows)
+        // 四项都必须是档位下标（DESIGN.md §4.2 的四张阶梯），不能是连续区间
+        assertEq(
+          '四个滑杆的档位下标上限',
+          [...rows].map((r) => r.querySelector('input').max).join(','),
+          '6,2,2,2'
+        )
+        assertEq('滑杆全是整数档', [...rows].every((r) => r.querySelector('input').step === '1'), true)
+        ok('面板里有预览块', !!document.querySelector('.appearance-preview'))
+        assertEq('预览块与阅读区共用主题变量', document.querySelector('.appearance-preview').dataset.readerTheme, host.querySelector('.reader').dataset.readerTheme)
+
+        const themeBefore = host.querySelector('.reader').dataset.readerTheme
+        const themeOpts = document.querySelectorAll('.theme-opt')
+        assertEq('主题可选 4 套', themeOpts.length, 4)
+        themeOpts[2].click()
+        await sleep(80)
+        assertEq('点主题即切换阅读区', host.querySelector('.reader').dataset.readerTheme !== themeBefore, true)
+        const savedPrefs = JSON.parse(localStorage.getItem('book-reader:prefs') || '{}')
+        assertEq('主题选择已持久化', savedPrefs.readerTheme, host.querySelector('.reader').dataset.readerTheme)
+        themeOpts[0].click()
+        await sleep(50)
+
+        // 改字号：页数要变多，而且当前读到的段落不能跑掉。
+        // 滑杆的取值是**档位下标**（DESIGN.md §4.2 的 7 档），所以直接给最大下标 6 → 28px
+        const pagesBefore = readPageLabel().pages
+        const anchorBefore = firstVisibleStart()
+        const sizeInput = document.querySelectorAll('.appearance-row input')[0]
+        const setVal = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+        assertEq('字号滑杆走档位下标', sizeInput.max, '6')
+        setVal.call(sizeInput, String(sizeInput.max))
+        sizeInput.dispatchEvent(new Event('input', { bubbles: true }))
+        await sleep(300)
+        const pagesAfter = readPageLabel().pages
+        log(`字号 18 → 28：页数 ${pagesBefore} → ${pagesAfter}，锚点 ${anchorBefore} → ${firstVisibleStart()}`)
+        assertEq('字号变量已生效', getComputedStyle(host.querySelector('.reader')).getPropertyValue('--reader-size').trim(), '28px')
+        ok('字号变大后页数增加', pagesAfter > pagesBefore)
+
+        {
+          // 换字号后，锚点段落必须仍落在当前页上（否则就是「换个字号就跳走」）
+          const colNow = colOfOffset(anchorBefore, c3segs)
+          assertEq(`换字号后仍停在同一段文字（该段在第 ${colNow} 栏，当前第 ${currentPage()} 页）`, colNow, currentPage())
+        }
+
+        // 恢复默认
+        const resetBtn = [...document.querySelectorAll('.appearance .btn, .modal .btn')].find((b) => b.textContent.includes('恢复默认'))
+        if (resetBtn) {
+          resetBtn.click()
+          await sleep(250)
+          assertEq('恢复默认字号', getComputedStyle(host.querySelector('.reader')).getPropertyValue('--reader-size').trim(), '18px')
+        } else {
+          ok('找到「恢复默认」按钮', false)
+        }
+        const closeBtn = [...document.querySelectorAll('.modal .btn')].find((b) => b.textContent.includes('关闭'))
+        closeBtn.click()
+        await sleep(80)
+        assertEq('面板已关闭', document.querySelectorAll('.appearance-row').length, 0)
+
+        /* ---------- 12. 划词 → 高亮 → 笔记面板 → 跳回 ---------- */
+        const segEl2 = host.querySelectorAll('.txt-p')[6]
+        const segStart2 = Number(segEl2.dataset.start)
+        const selText = segEl2.textContent.slice(3, 12)
+        const tn2 = segEl2.firstChild.nodeType === 3 ? segEl2.firstChild : segEl2.firstChild.firstChild
+        const rg = document.createRange()
+        rg.setStart(tn2, 3)
+        rg.setEnd(tn2, 12)
+        const sel2 = window.getSelection()
+        sel2.removeAllRanges()
+        sel2.addRange(rg)
+
+        const pop = await until(() => document.querySelector('.popover'), 2500)
+        ok('划词后弹出高亮气泡', !!pop)
+        if (!pop) throw new Error('划词气泡没出现')
+        document.querySelector('.popover .sw[data-color="green"]').click()
+        await sleep(250)
+
+        const marks = await db.highlights.where('bookId').equals(id).toArray()
+        assertEq('高亮已入库', marks.length, 1)
+        {
+          const h = marks[0]
+          assertEq('高亮记在章序号上（当前第 4 章）', h.page, 3)
+          assertEq('高亮文字 = 选中的 9 个字', h.text, selText)
+          assertEq('高亮起点 = 段起 + 3（章内偏移）', h.start.offset, segStart2 - chapters[3].start + 3)
+          assertEq('高亮终点 = 段起 + 12', h.end.offset, segStart2 - chapters[3].start + 12)
+          assertEq('颜色', h.color, 'green')
+        }
+        const mk = await until(() => host.querySelector('.txt-p mark[data-color="green"]'), 2000)
+        ok('页面上真的画出高亮', !!mk && mk.textContent === selText)
+        sel2.removeAllRanges()
+
+        // 换到别的章，再从笔记面板跳回来
+        btn('上一章').click()
+        ok(
+          '先退到第 3 章',
+          await until(() => Number(host.querySelector('.txt-p').dataset.start) === chapters[2].start, 3000)
+        )
+        btn('面板').click()
+        await until(() => host.querySelector('.drawer'))
+        const notesTab = [...host.querySelectorAll('.drawer .tab')].find((b) => b.textContent.includes('笔记'))
+        notesTab.click()
+        const noteItem = await until(() => host.querySelector('.note-item'), 2500)
+        ok('笔记面板列出刚划的高亮', !!noteItem)
+        assertEq('笔记标签用「章」而不是「页」', host.querySelector('.note-pg').textContent, '第4章')
+        ok('笔记文字正确', host.querySelector('.note-text').textContent === selText)
+
+        host.querySelector('.note-main').click()
+        const okJump = await until(
+          () => Number(host.querySelector('.txt-p').dataset.start) === chapters[3].start,
+          3000
+        )
+        ok('点笔记跳回第 4 章原处', !!okJump)
+
+        root.unmount()
+
+        dump()
+        log(failed ? 'RESULT: FAIL (' + failed + ' 条断言未过)' : 'RESULT: PASS')
+        log('ALL DONE')
+      } catch (e) {
+        log('THROWN: ' + (e && e.message ? e.message : e))
+        log('stack: ' + (e && e.stack ? String(e.stack).split('\n').slice(0, 4).join(' | ') : ''))
+        dump()
+        log('ALL DONE')
+      }
+    </script>
+  </body>
+</html>

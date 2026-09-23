@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>App end-to-end (EPUB)</title>
+    <style>
+      body { font: 12px/1.5 monospace; padding: 12px; margin: 0; }
+      /* App 是整屏应用。故意给得又窄又矮：一章要跨好几栏，
+         「翻页 → 写回章内偏移」这条链路才测得到（给宽了整章一页就完了）。 */
+      #host { width: 300px; height: 320px; position: relative; border: 1px solid #888; overflow: hidden; }
+      #log { position: fixed; right: 0; top: 0; width: 520px; height: 100vh; background: #fff; z-index: 99999; padding: 10px; overflow: auto; border-left: 1px solid #ccc; }
+    </style>
+  </head>
+  <body>
+    <div id="host"></div>
+    <div id="log"></div>
+    <script>
+      window.__errs = []
+      window.addEventListener('error', (e) => {
+        window.__errs.push('WINDOW ERROR: ' + (e.message || e.error) + ' @ ' + (e.filename || '') + ':' + (e.lineno || ''))
+      })
+      window.addEventListener('unhandledrejection', (e) =>
+        window.__errs.push('REJECTION: ' + (e.reason && e.reason.message ? e.reason.message : e.reason))
+      )
+    </script>
+    <script type="module">
+      import '/src/styles.css'
+
+      const ENDPOINT = 'http://127.0.0.1:5178/log'
+      const IN_TARGET = location.pathname.endsWith('dev-app.html')
+      const log = (m) => {
+        document.getElementById('log').innerHTML += `<div>${m}</div>`
+        if (IN_TARGET) { try { fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true }) } catch {} }
+      }
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+      const dump = () => window.__errs.forEach((e) => log(e))
+      let failed = 0
+      const assertEq = (label, got, want) => {
+        const pass = got === want
+        if (!pass) failed++
+        log(`${pass ? 'ok  ' : 'BAD '}${label}: ${JSON.stringify(got)}` + (pass ? '' : ' (want ' + JSON.stringify(want) + ')'))
+      }
+      const ok = (label, cond) => {
+        if (!cond) failed++
+        log(`${cond ? 'ok  ' : 'BAD '}${label}`)
+      }
+      const until = async (fn, ms = 6000, step = 50) => {
+        const t0 = Date.now()
+        for (;;) {
+          let v = null
+          try { v = fn() } catch (e) { v = null }
+          if (v) return v
+          if (Date.now() - t0 > ms) return null
+          await sleep(step)
+        }
+      }
+      // until 只能收同步判定：`if (v) return v` 碰上 Promise 会当场返回（Promise 恒为真），
+      // 再 await 出来就是第一帧的结果 —— 需要轮询的异步断言必须用这个。
+      const waitFor = async (fn, ms = 6000, step = 50) => {
+        const t0 = Date.now()
+        for (;;) {
+          let v = null
+          try { v = await fn() } catch (e) { v = null }
+          if (v) return v
+          if (Date.now() - t0 > ms) return null
+          await sleep(step)
+        }
+      }
+
+      try {
+        log('boot')
+
+        const { db, listBooks, getBook, getBlob } = await import('/src/db.js')
+        const { importFile } = await import('/src/lib/importer.js')
+        const React = (await import('react')).default
+        const { createRoot } = await import('react-dom/client')
+        const App = (await import('/src/App.jsx')).default
+
+        await db.delete()
+        await db.open()
+        location.hash = '#/'
+        log('db cleared')
+
+        const asFile = async (name, url, type) =>
+          new File([await (await fetch(url)).arrayBuffer()], name, { type })
+
+        const epub3 = await asFile('sample.epub', '/@fs/D:/book-reader/samples/sample.epub', 'application/epub+zip')
+        const epub2 = await asFile('sample-ncx.epub', '/@fs/D:/book-reader/samples/sample-ncx.epub', 'application/epub+zip')
+        log(`样例：${epub3.name} ${epub3.size}B / ${epub2.name} ${epub2.size}B`)
+
+        /* ---------- 1. importFile：解析 → 落库 ---------- */
+        assertEq('空书架', (await listBooks()).length, 0)
+
+        const r1 = await importFile(epub3)
+        assertEq('首次导入 status', r1.status, 'added')
+        assertEq('首次导入 format', r1.format, 'epub')
+        assertEq('首次导入章数', r1.chapters, 5)
+        assertEq('首次导入作者', r1.author, '测试作者')
+        const epubId = r1.id
+
+        const rows = await listBooks()
+        assertEq('书架里 1 本', rows.length, 1)
+        const b1 = await getBook(epubId)
+        assertEq('落库标题', b1.title, '样例电子书')
+        assertEq('落库 format', b1.format, 'epub')
+        assertEq('落库 pageCount = 章数', b1.pageCount, 5)
+        assertEq('落库 author', b1.author, '测试作者')
+        assertEq('落库 fileName', b1.fileName, 'sample.epub')
+        ok('落库带内容指纹', /^(sha256|fnv1a):/.test(b1.fileHash || ''))
+        ok('封面是内联图片（不联网）', /^data:image\//.test(b1.cover || ''))
+        // 原文件单独一张表（books 只存元数据），别在 getBook 的返回值上找 blob
+        const b1blob = await getBlob(epubId)
+        log(`getBlob 诊断：${b1blob === null ? 'null' : Object.prototype.toString.call(b1blob) + ' size=' + b1blob.size + ' ctor=' + (b1blob.constructor && b1blob.constructor.name)}`)
+        ok('原文件存在（blob 不是空壳）', b1blob instanceof Blob && b1blob.size > 1000)
+
+        /* ---------- 2. 重复导入：指纹去重，不多出一本 ---------- */
+        const r1b = await importFile(await asFile('改个名字.epub', '/@fs/D:/book-reader/samples/sample.epub', 'application/epub+zip'))
+        assertEq('同名内容再导入 → duplicate', r1b.status, 'duplicate')
+        assertEq('改名也算同一本', r1b.id, epubId)
+        assertEq('书架仍然 1 本', (await listBooks()).length, 1)
+
+        /* ---------- 3. App：书架 → 路由 → 阅读器 ---------- */
+        const host = document.getElementById('host')
+        const root = createRoot(host)
+        root.render(React.createElement(App))
+
+        const card = await until(() => host.querySelector('.card'), 8000)
+        ok('App 挂载后渲染出书卡', !!card)
+        assertEq('书卡标题', host.querySelector('.card-title')?.textContent, '样例电子书')
+        ok(
+          `书卡元信息按「节」+ 作者（${host.querySelector('.card-meta span')?.textContent}）`,
+          /5 节 · 测试作者/.test(host.querySelector('.card-meta span')?.textContent || '')
+        )
+
+        // 点封面 → 走 hash 路由进阅读器
+        host.querySelector('.cover').click()
+        assertEq('点书进阅读器：hash 变了', location.hash, `#/read/${epubId}`)
+        const reader = await until(() => host.querySelector('.epub-reader'), 10000)
+        ok('EPUB 阅读器挂载', !!reader)
+        assertEq('阅读器根节点带 epub-reader 标记', reader?.className.includes('epub-reader'), true)
+
+        const headTitle = await until(() => host.querySelector('.txt-head-title')?.textContent, 8000)
+        assertEq('顶栏显示第一章标题', headTitle, '第一章 晨读')
+        const headSub = host.querySelector('.txt-head-sub')?.textContent || ''
+        ok(`顶栏显示「第 1/5 节」（${headSub}）`, /第 1\/5 节/.test(headSub))
+        const firstP = await until(() => host.querySelector('.txt-p[data-start]')?.textContent, 8000)
+        ok(`正文渲染出来了（${(firstP || '').slice(0, 12)}…）`, (firstP || '').length > 4)
+
+        /* ---------- 4. 翻一页再返回：路由回得去，进度已写回 ---------- */
+        // 只打开不翻页是不写进度的（导入时那条 started:false 占位会原样留着），
+        // 所以要先把位置动一下，才谈得上「写回」。
+        const pageBefore = host.querySelector('.scrub-num')?.textContent
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+        const moved = await until(() => (host.querySelector('.scrub-num')?.textContent !== pageBefore ? true : null), 6000)
+        ok(`右方向键翻到了下一页（${pageBefore} → ${host.querySelector('.scrub-num')?.textContent}）`, !!moved)
+
+        const backBtn = [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '返回')
+        ok('顶栏有「返回」', !!backBtn)
+        backBtn.click()
+        assertEq('返回后 hash 回到书架', location.hash, '#/')
+        ok('书架重新渲染', !!(await until(() => host.querySelector('.card'), 6000)))
+
+        const prog = await waitFor(async () => {
+          const p = await db.progress.get(epubId)
+          return p && Number.isFinite(p.chapterIndex) ? p : null
+        }, 8000)
+        ok('阅读进度写回了库', !!prog)
+        assertEq('进度记的是节号（0 基）', prog?.chapterIndex, 0)
+        assertEq('进度里的 page 是 1 基（给书架算百分比用）', prog?.page, 1)
+        assertEq('进度标记为「真的读过」', prog?.started, true)
+        ok(`进度记了章内字符偏移（${prog?.charOffset}），换字号后能定位回来`, Number.isFinite(prog?.charOffset) && prog.charOffset > 0)
+
+        /* ---------- 5. 拖拽导入走的是同一条链路（App 的 onImport） ---------- */
+        const shelf = host.querySelector('.shelf')
+        const dt = new DataTransfer()
+        dt.items.add(epub2)
+        shelf.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }))
+        const toast = await until(() => host.querySelector('.toast')?.textContent, 12000)
+        ok(`拖入 EPUB2 后给了提示（${(toast || '').replace(/\n/g, ' / ')}）`, !!toast)
+        assertEq('导入提示写明节数', /5 节/.test(toast || ''), true)
+        const cards = await until(() => (host.querySelectorAll('.card').length === 2 ? host.querySelectorAll('.card') : null), 8000)
+        assertEq('书架变成 2 本', cards?.length, 2)
+
+        /* ---------- 6. EPUB2（只有 NCX）也能从书架一路读起来 ---------- */
+        const ncxs = [...host.querySelectorAll('.card-title')].map((n) => n.textContent)
+        ok(`第 2 本是 NCX 版（${ncxs.join(' | ')}）`, ncxs.includes('样例电子书（NCX 版）'))
+        const ncxBtn = [...host.querySelectorAll('.card-title')].find((n) => n.textContent === '样例电子书（NCX 版）')
+        ncxBtn.click()
+        const reader2 = await until(() => host.querySelector('.epub-reader'), 10000)
+        ok('NCX 版也能进阅读器', !!reader2)
+        const head2 = await until(() => host.querySelector('.txt-head-title')?.textContent, 8000)
+        assertEq('NCX 版顶栏是第一章', head2, '第一章 晨读')
+        const sub2 = host.querySelector('.txt-head-sub')?.textContent || ''
+        ok(`NCX 版也认得出 5 节（${sub2}）`, /第 1\/5 节/.test(sub2))
+
+        root.unmount()
+        host.remove()
+
+        dump()
+        log(failed ? 'RESULT: FAIL (' + failed + ' 条断言未过)' : 'RESULT: PASS')
+        log('ALL DONE')
+      } catch (e) {
+        log('THROWN: ' + (e && e.message ? e.message : e))
+        log('stack: ' + (e && e.stack ? String(e.stack).split('\n').slice(0, 4).join(' | ') : ''))
+        dump()
+        log('ALL DONE')
+      }
+    </script>
+  </body>
+</html>

@@ -13,3 +13,5 @@ public/cmaps
 public/standard_fonts
 # agent 工作记忆目录（含本机环境细节），不进仓库
 .workbuddy/
+# 工作台发布标记（记录本机绝对路径，对别人无意义）
+.wbapp_*.genie

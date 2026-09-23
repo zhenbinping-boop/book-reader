@@ -10,13 +10,22 @@ import {
   deleteHighlight,
   getTextIndex,
   putTextIndex,
+  listBookmarks,
+  addBookmark,
+  deleteBookmark,
 } from '../db'
 import { loadPrefs, savePrefs, resolveTheme, nextTheme, THEME_LABELS } from '../lib/prefs'
 import { readSelection } from '../lib/selection'
 import { exportNotes } from '../lib/backup'
+import useHistoryStack from '../hooks/useHistoryStack'
+import useWakeLock from '../hooks/useWakeLock'
+import useImmersive from '../hooks/useImmersive'
+import usePinch, { applyPinchFx } from '../hooks/usePinch'
 import PdfPage from './PdfPage'
 import SidePanel from './SidePanel'
 import SelectionPopover from './SelectionPopover'
+import DisplayMenu from './DisplayMenu'
+import BookmarkButton from './BookmarkButton'
 
 const GAP = 12
 const MAX_VISIBLE = 12
@@ -38,13 +47,26 @@ export default function PdfReader({ bookId, title, onBack }) {
   const [drawer, setDrawer] = useState(false)
   // 阅读主题：用户显式选择优先，否则跟随系统（见 DESIGN.md §3.4）
   const [theme, setTheme] = useState(() => resolveTheme(loadPrefs()))
+  const [prefs, setPrefs] = useState(() => loadPrefs())
+  const [menu, setMenu] = useState(false)
   const [viewBox, setViewBox] = useState({ w: 0, h: 0 })
   const [visible, setVisible] = useState(() => new Set())
+
+  const {
+    on: immersive,
+    realFs,
+    supported: fsSupported,
+    toggle: toggleImmersive,
+  } = useImmersive()
+  const keepAwake = useWakeLock(prefs.readerKeepAwake)
 
   // ---- 划词高亮 ----
   const [highlights, setHighlights] = useState([])
   const [popover, setPopover] = useState(null)
   const popoverRef = useRef(null)
+
+  // ---- 书签 ----
+  const [bookmarks, setBookmarks] = useState([])
 
   // ---- 全文搜索 ----
   const [query, setQuery] = useState('')
@@ -69,6 +91,11 @@ export default function PdfReader({ bookId, title, onBack }) {
   const restoredRef = useRef(false)
   const touchRef = useRef(null)
   const offsetsRef = useRef([])
+  // 手势中的临时缩放挂在这一层（整个内容块）。它的尺寸随缩放变，所以
+  // transform-origin 必须按当前视口算 —— 见 usePinch 的 applyPinchFx
+  const pagesRef = useRef(null)
+  const zoomRef = useRef(1)
+  const prefsRef = useRef(loadPrefs())
 
   // 页对象缓存：canvas 与文本层共用，避免同一页被 getPage 两次
   const pageCache = useMemo(() => ({ ready: new Map(), pending: new Map() }), [])
@@ -76,6 +103,8 @@ export default function PdfReader({ bookId, title, onBack }) {
   currentRef.current = current
   modeRef.current = mode
   nPagesRef.current = sizes.length || 1
+  zoomRef.current = zoom
+  prefsRef.current = prefs
 
   // ---- 载入文档 ----
   useEffect(() => {
@@ -112,7 +141,8 @@ export default function PdfReader({ bookId, title, onBack }) {
         const marks = await listHighlights(bookId).catch(() => [])
         if (!alive) return
         setHighlights(marks)
-
+        setBookmarks(await listBookmarks(bookId).catch(() => []))
+        if (!alive) return
         setPhase('ready')
       } catch (err) {
         if (!alive) return
@@ -178,6 +208,94 @@ export default function PdfReader({ bookId, title, onBack }) {
       if (off != null && viewRef.current) viewRef.current.scrollTop = off
     }
   }, [])
+
+  /* ---------------- 位置后退栈 ---------------- */
+
+  const { push: pushHist, pop: popHist, depth: histDepth } = useHistoryStack()
+
+  const rememberHere = useCallback(() => {
+    pushHist({ page: currentRef.current })
+  }, [pushHist])
+
+  /** 跳转到某页（目录 / 搜索结果都走这里）。已经在那一页就不用记账了 */
+  const jumpToPage = useCallback(
+    (page) => {
+      const target = Math.min(Math.max(1, Math.round(page)), nPagesRef.current)
+      if (target !== currentRef.current) rememberHere()
+      goTo(target)
+    },
+    [goTo, rememberHere]
+  )
+
+  const backToPrev = useCallback(() => {
+    const entry = popHist()
+    if (!entry) return
+    goTo(entry.page)
+    setToast(`已回到第 ${entry.page} 页`)
+  }, [goTo, popHist])
+
+  /* ---------------- 书签 ---------------- */
+
+  const reloadBookmarks = useCallback(async () => {
+    setBookmarks(await listBookmarks(bookId).catch(() => []))
+  }, [bookId])
+
+  /**
+   * PDF 是固定版式，「第几页」本身就是稳定的位置，所以书签只记页号。
+   * 不需要 TXT / EPUB 那套章内字符偏移 —— 也就没有「重排后偏移落到别页」这类问题，
+   * 判定退化成「有书签正好在这一页吗」。
+   */
+  const currentBookmark = useMemo(
+    () => bookmarks.find((b) => b.page === current - 1) ?? null,
+    [bookmarks, current]
+  )
+
+  /** 摘要直接读**已经渲染好的文本层**，不为了取一行文字去解析整个 PDF */
+  const snippetHere = useCallback(() => {
+    const el = layersRef.current.get(currentRef.current - 1)
+    const text = (el?.textContent || '').replace(/\s+/g, ' ').trim()
+    return text.slice(0, 40)
+  }, [])
+
+  const toggleBookmark = useCallback(async () => {
+    try {
+      if (currentBookmark) {
+        await deleteBookmark(currentBookmark.id)
+        await reloadBookmarks()
+        setToast('已删除这个书签')
+        return
+      }
+      await addBookmark({
+        bookId,
+        page: currentRef.current - 1,
+        charOffset: 0,
+        // 固定版式里「第 N 页」已经是最清楚的位置说明，不再存一份重复的 label；
+        // 侧栏会按格式把页号渲染成 p12
+        label: '',
+        snippet: snippetHere(),
+      })
+      await reloadBookmarks()
+      setToast(`已加书签 · 第 ${currentRef.current} 页`)
+    } catch (err) {
+      console.error('[book-reader] 书签写入失败', err)
+      setToast('书签没能保存')
+    }
+  }, [bookId, currentBookmark, reloadBookmarks, snippetHere])
+
+  const onJumpBookmark = useCallback((b) => jumpToPage(b.page + 1), [jumpToPage])
+
+  const onBookmarkDelete = useCallback(
+    async (b) => {
+      try {
+        await deleteBookmark(b.id)
+        await reloadBookmarks()
+        setToast('已删除书签')
+      } catch (err) {
+        console.error('[book-reader] 删除书签失败', err)
+      }
+    },
+    [reloadBookmarks]
+  )
 
   useEffect(() => {
     if (phase !== 'ready' || didJump.current) return
@@ -311,6 +429,70 @@ export default function PdfReader({ bookId, title, onBack }) {
     }
   }, [bookId])
 
+  /* ---------------- 沉浸 / 常亮 / 双指缩放 ---------------- */
+
+  // 进入沉浸先把工具栏收起来（之后点中间区仍可临时唤出，和视频播放器一个套路）
+  useEffect(() => {
+    setUi(!immersive)
+  }, [immersive])
+
+  const toggleKeepAwake = useCallback(() => {
+    const next = !prefsRef.current.readerKeepAwake
+    setPrefs(savePrefs({ readerKeepAwake: next }))
+    keepAwake.setOn(next)
+  }, [keepAwake])
+
+  /**
+   * PDF 是固定版式，双指缩放直接调渲染倍率（和工具栏 ± 同一个值），
+   * 不吸附档位 —— 连续缩放对版式书是合理的，重渲染虽然贵，但只在松手时做一次。
+   */
+  const commitPinchZoom = useCallback((z) => {
+    const next = clampZoom(z)
+    setZoom(next)
+    return next
+  }, [])
+
+  const { shouldIgnoreSwipe } = usePinch({
+    targetRef: viewRef,
+    feedbackRef: pagesRef,
+    enabled: phase === 'ready',
+    getValue: () => zoomRef.current,
+    commit: commitPinchZoom,
+    min: ZOOM_MIN,
+    max: ZOOM_MAX,
+  })
+
+  const menuRows = [
+    {
+      key: 'wake',
+      type: 'switch',
+      label: '阅读时常亮',
+      on: keepAwake.on,
+      note: keepAwake.supported ? '' : '此设备不支持',
+      onToggle: toggleKeepAwake,
+    },
+    {
+      key: 'immersive',
+      type: 'switch',
+      label: '全屏沉浸',
+      on: immersive,
+      note: fsSupported ? '' : '仅隐藏界面',
+      onToggle: toggleImmersive,
+    },
+    {
+      key: 'theme',
+      type: 'action',
+      label: '阅读主题',
+      value: THEME_LABELS[theme],
+      onClick: () => {
+        const next = nextTheme(theme)
+        setTheme(next)
+        savePrefs({ readerTheme: next })
+        setPrefs((p) => ({ ...p, readerTheme: next }))
+      },
+    },
+  ]
+
   // ---- 自动隐藏控件 ----
   useEffect(() => {
     if (phase !== 'ready') return
@@ -321,7 +503,15 @@ export default function PdfReader({ bookId, title, onBack }) {
   useEffect(() => {
     const onKey = (e) => {
       if (drawer) return
+      if (menu) return
       if (e.key === 'Escape') return onBack()
+      // Alt+← 回退到跳转前的位置。放在 mode 判断之前 —— 连续模式下方向键
+      // 虽然不翻页，但「跳转回退」跟翻页模式无关，两种模式都该能用
+      if (e.altKey && e.key === 'ArrowLeft') {
+        e.preventDefault()
+        backToPrev()
+        return
+      }
       if (modeRef.current !== 'page') return
       if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === 'PageDown') {
         e.preventDefault()
@@ -333,7 +523,7 @@ export default function PdfReader({ bookId, title, onBack }) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [goTo, onBack, drawer])
+  }, [goTo, onBack, drawer, menu, backToPrev])
 
   /* ---------------- 划词高亮 ---------------- */
 
@@ -502,20 +692,20 @@ export default function PdfReader({ bookId, title, onBack }) {
     }
   }, [textPages, bookId, pdf])
 
-  const onJumpHit = useCallback((hit) => goTo(hit.page + 1), [goTo])
+  const onJumpHit = useCallback((hit) => jumpToPage(hit.page + 1), [jumpToPage])
 
   /* ---------------- 笔记导出 ---------------- */
 
   const onExportNotes = useCallback(() => {
     try {
-      const r = exportNotes({ title }, highlights)
+      const r = exportNotes({ title }, highlights, { bookmarks })
       setToast(
         r.count ? `已导出 ${r.count} 条笔记：${r.filename}` : '这本书还没有笔记，已导出空文件'
       )
     } catch (err) {
       setToast(`导出失败：${err?.message || '未知错误'}`)
     }
-  }, [title, highlights])
+  }, [title, highlights, bookmarks])
 
   useEffect(() => {
     if (!toast) return
@@ -574,7 +764,7 @@ export default function PdfReader({ bookId, title, onBack }) {
   )
 
   return (
-    <div className="reader" data-reader-theme={theme}>
+    <div className={`reader${immersive ? ' immersive' : ''}`} data-reader-theme={theme}>
       <div
         className={`reader-view${mode === 'page' ? ' page-mode' : ''}`}
         ref={viewRef}
@@ -586,6 +776,12 @@ export default function PdfReader({ bookId, title, onBack }) {
           setUi((v) => !v)
         }}
         onTouchStart={(e) => {
+          // 双指落下时不要用它当「滑动起点」：两指的起点终点混在一起会算出一个
+          // 巨大的位移，松手时被当成翻页
+          if (e.touches.length > 1) {
+            touchRef.current = null
+            return
+          }
           const t = e.touches[0]
           touchRef.current = { x: t.clientX, y: t.clientY }
         }}
@@ -593,6 +789,8 @@ export default function PdfReader({ bookId, title, onBack }) {
           const start = touchRef.current
           touchRef.current = null
           if (!start || mode !== 'page') return
+          // 刚做完双指缩放：`changedTouches[0]` 的位移可能远超 50px，别误判成翻页
+          if (shouldIgnoreSwipe()) return
           const t = e.changedTouches[0]
           const dx = t.clientX - start.x
           const dy = t.clientY - start.y
@@ -601,7 +799,11 @@ export default function PdfReader({ bookId, title, onBack }) {
           }
         }}
       >
-        <div className="pages" style={mode === 'page' ? undefined : { width: maxWidth * scale }}>
+        <div
+          className="pages"
+          ref={pagesRef}
+          style={mode === 'page' ? undefined : { width: maxWidth * scale }}
+        >
           {mode === 'page' ? (
             <div
               className="page-slot"
@@ -631,6 +833,16 @@ export default function PdfReader({ bookId, title, onBack }) {
         <button className="btn btn-sm" onClick={onBack}>
           返回
         </button>
+        {histDepth > 0 && (
+          <button
+            className="btn btn-sm"
+            onClick={backToPrev}
+            title="回到跳转前的位置（Alt+←）"
+            aria-label="回到跳转前的位置"
+          >
+            ↩
+          </button>
+        )}
         <div className="reader-title">{title}</div>
         <button
           className="btn btn-sm"
@@ -638,17 +850,25 @@ export default function PdfReader({ bookId, title, onBack }) {
         >
           {mode === 'scroll' ? '连续' : '单页'}
         </button>
-        <button className="btn btn-sm" onClick={() => setZoom((z) => clampZoom(z - 0.25))}>
+        <BookmarkButton on={!!currentBookmark} onToggle={toggleBookmark} />
+        <button
+          className="btn btn-sm toolbar-optional"
+          onClick={() => setZoom((z) => clampZoom(z - 0.25))}
+        >
           −
         </button>
         <button
           className="btn btn-sm"
           style={{ minWidth: 48, fontVariantNumeric: 'tabular-nums' }}
           onClick={() => setZoom(1)}
+          title="恢复 100%"
         >
           {Math.round(zoom * 100)}%
         </button>
-        <button className="btn btn-sm" onClick={() => setZoom((z) => clampZoom(z + 0.25))}>
+        <button
+          className="btn btn-sm toolbar-optional"
+          onClick={() => setZoom((z) => clampZoom(z + 0.25))}
+        >
           ＋
         </button>
         <button
@@ -659,9 +879,18 @@ export default function PdfReader({ bookId, title, onBack }) {
             const next = nextTheme(theme)
             setTheme(next)
             savePrefs({ readerTheme: next })
+            setPrefs((p) => ({ ...p, readerTheme: next }))
           }}
         >
           <span className="theme-dot" data-theme={theme} aria-hidden="true" />
+        </button>
+        <button
+          className="btn btn-sm"
+          onClick={() => setMenu(true)}
+          title="显示设置：常亮 / 沉浸 / 主题"
+          aria-label="显示设置"
+        >
+          ⋯
         </button>
         <button className="btn btn-sm" onClick={() => setDrawer(true)}>
           面板
@@ -700,11 +929,16 @@ export default function PdfReader({ bookId, title, onBack }) {
           onClose={() => setDrawer(false)}
           onJumpPage={(page) => {
             setDrawer(false)
-            goTo(page)
+            jumpToPage(page)
           }}
           highlights={highlights}
           onMarkClick={onMarkClick}
           onMarkDelete={removeMark}
+          bookmarks={bookmarks}
+          currentBookmark={currentBookmark}
+          onBookmarkToggle={toggleBookmark}
+          onJumpBookmark={onJumpBookmark}
+          onBookmarkDelete={onBookmarkDelete}
           ensureIndex={ensureIndex}
           indexProgress={indexProgress}
           onJumpHit={onJumpHit}
@@ -713,6 +947,8 @@ export default function PdfReader({ bookId, title, onBack }) {
           setQuery={setQuery}
         />
       )}
+
+      {menu && <DisplayMenu rows={menuRows} onClose={() => setMenu(false)} />}
 
       {toast && <div className="toast">{toast}</div>}
     </div>

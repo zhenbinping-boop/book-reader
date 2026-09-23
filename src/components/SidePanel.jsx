@@ -3,13 +3,20 @@ import { searchInPages } from '../lib/pdfText'
 
 const TABS = [
   { id: 'outline', label: '目录' },
+  { id: 'bookmarks', label: '书签' },
   { id: 'notes', label: '笔记' },
   { id: 'search', label: '搜索' },
 ]
 
 /**
- * 阅读器侧栏：目录 / 笔记 / 搜索。
- * 三件事都属于「跳出当前页去做点别的」，共用一个抽屉比堆三个入口清楚。
+ * 阅读器侧栏：目录 / 书签 / 笔记 / 搜索。
+ * 四件事都属于「跳出当前页去做点别的」，共用一个抽屉比堆四个入口清楚。
+ *
+ * PDF / TXT / EPUB 共用这个面板，差别靠几个可选 prop 吸收：
+ *   - search：搜索实现。默认按「页」搜（PDF），TXT / EPUB 传按「章」搜的实现；
+ *   - pageLabel：把 page 序号渲染成人看的标签（p3 / 第3章 / 第3节）；
+ *   - onNoteJump：点笔记的跳转。TXT / EPUB 需要精确跳到章内某处，而不是只翻到某页；
+ *   - bookmarks 一族：书签列表 + 当前页是否已有书签 + 跳转 / 删除 / 切换。
  */
 export default function SidePanel({
   outline,
@@ -24,11 +31,21 @@ export default function SidePanel({
   onExportNotes,
   query,
   setQuery,
+  search,
+  pageLabel,
+  onNoteJump,
+  bookmarks,
+  currentBookmark,
+  onBookmarkToggle,
+  onJumpBookmark,
+  onBookmarkDelete,
 }) {
   const [tab, setTab] = useState('outline')
   const [hits, setHits] = useState(null)
   const [tip, setTip] = useState('')
   const [busy, setBusy] = useState(false)
+
+  const label = pageLabel || ((i) => `p${i + 1}`)
 
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
@@ -63,7 +80,7 @@ export default function SidePanel({
         setTip('文本索引不可用')
         return
       }
-      const found = searchInPages(pages, q)
+      const found = search ? search(pages, q) : searchInPages(pages, q)
       if (!alive) return
       setHits(found)
       setBusy(false)
@@ -85,6 +102,17 @@ export default function SidePanel({
     [highlights]
   )
 
+  // 书签按「页/章 + 章内偏移」排 —— 与正文的先后顺序一致，列表读起来才是顺着书的
+  const sortedMarks = useMemo(
+    () =>
+      [...(bookmarks || [])].sort(
+        (a, b) => a.page - b.page || (a.charOffset ?? 0) - (b.charOffset ?? 0)
+      ),
+    [bookmarks]
+  )
+
+  const badges = { bookmarks: sortedMarks.length, notes: sortedNotes.length }
+
   const pct = indexProgress
     ? Math.round((indexProgress.done / Math.max(1, indexProgress.total)) * 100)
     : 0
@@ -104,9 +132,7 @@ export default function SidePanel({
                 onClick={() => setTab(t.id)}
               >
                 {t.label}
-                {t.id === 'notes' && sortedNotes.length > 0 && (
-                  <span className="tab-badge">{sortedNotes.length}</span>
-                )}
+                {badges[t.id] > 0 && <span className="tab-badge">{badges[t.id]}</span>}
               </button>
             ))}
           </div>
@@ -136,6 +162,56 @@ export default function SidePanel({
           </div>
         )}
 
+        {tab === 'bookmarks' && (
+          <>
+            <div className="notes-bar">
+              <span className="notes-count">
+                {sortedMarks.length ? `共 ${sortedMarks.length} 个` : '暂无书签'}
+              </span>
+              <button
+                className="btn btn-sm"
+                data-bm-toggle="1"
+                onClick={onBookmarkToggle}
+                disabled={!onBookmarkToggle}
+                title="书签记住的是「这一页最上面那段文字」，换字号后也回得来"
+              >
+                {currentBookmark ? '取消当前位置' : '加当前位置'}
+              </button>
+            </div>
+            <div className="panel-body">
+              {sortedMarks.length === 0 ? (
+                <div className="outline-empty">
+                  还没有书签。看书时按顶栏的书签图标，或点上面的「加当前位置」，就能把当前位置记下来。
+                </div>
+              ) : (
+                sortedMarks.map((b) => (
+                  <div
+                    key={b.id}
+                    className={`bm-item${b.id === currentBookmark?.id ? ' on' : ''}`}
+                    data-bookmark={b.id}
+                  >
+                    <button className="bm-main" onClick={() => onJumpBookmark(b)}>
+                      <span className="bm-where">
+                        <span className="bm-pg">{label(b.page)}</span>
+                        {b.label && <span className="bm-label">{b.label}</span>}
+                      </span>
+                      {b.snippet && <span className="bm-snippet">{b.snippet}</span>}
+                    </button>
+                    <button
+                      className="bm-del"
+                      title="删除这个书签"
+                      aria-label="删除这个书签"
+                      onClick={() => onBookmarkDelete(b)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </>
+        )}
+
         {tab === 'notes' && (
           <>
             <div className="notes-bar">
@@ -157,8 +233,11 @@ export default function SidePanel({
               ) : (
                 sortedNotes.map((h) => (
                   <div key={h.id} className="note-item">
-                    <button className="note-main" onClick={() => onJumpPage(h.page + 1)}>
-                      <span className="note-pg">p{h.page + 1}</span>
+                    <button
+                      className="note-main"
+                      onClick={() => (onNoteJump ? onNoteJump(h) : onJumpPage(h.page + 1))}
+                    >
+                      <span className="note-pg">{label(h.page)}</span>
                       <span className="note-text" data-color={h.color}>
                         {h.text}
                       </span>
@@ -200,7 +279,7 @@ export default function SidePanel({
                     className="hit-item"
                     onClick={() => onJumpHit(h)}
                   >
-                    <span className="hit-pg">p{h.page + 1}</span>
+                    <span className="hit-pg">{label(h.page)}</span>
                     <span className="hit-text">{h.snippet}</span>
                   </button>
                 ))}
@@ -223,7 +302,7 @@ function OutlineNode({ node, current, onJump, depth = 0 }) {
         className={`outline-item${node.pageIndex === current - 1 ? ' active' : ''}`}
         style={{ paddingLeft: 16 + depth * 14 }}
         title={node.title}
-        onClick={() => node.pageIndex != null && onJump(node.pageIndex + 1)}
+        onClick={() => node.pageIndex != null && onJump(node.pageIndex + 1, node)}
       >
         {node.pageIndex != null && <span className="pg">{node.pageIndex + 1}</span>}
         {node.title}

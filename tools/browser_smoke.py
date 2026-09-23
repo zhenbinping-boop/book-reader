@@ -84,8 +84,20 @@ def main():
 
     print("\n--- summary ---")
     print(f"lines received: {len(lines)}")
-    ok = any("ALL DONE" in l for l in lines)
+    done = any("ALL DONE" in l for l in lines)
+    # 页面自己会打 `RESULT: FAIL (N 条断言未过)`。只看 "ALL DONE" 会把
+    # 「跑完了但断言挂了」判成 PASS —— 必须把页面里的 FAIL 也当成失败。
+    # THROWN 同理：中途抛异常也会走到 ALL DONE，同样不算通过。
+    fails = [l for l in lines if "RESULT: FAIL" in l]
+    bads = [l for l in lines if l.startswith("BAD ") or l.startswith("THROWN:")]
+    ok = done and not fails and not bads
     print("RESULT:", "PASS" if ok else "INCOMPLETE/FAIL")
+    for l in fails[:5]:
+        print("  ", l)
+    for l in bads[:5]:
+        print("  ", l)
+    if len(bads) > 5:
+        print(f"    (另有 {len(bads) - 5} 条 BAD/THROWN 行，见上面日志)")
     return 0 if ok else 1
 
 

@@ -140,7 +140,10 @@
 /* ---- 阅读区四套主题：用户显式选择时覆盖系统默认 ----
    语义色（muted / accent）必须逐主题定义，单值无法通吃四套，见 DESIGN.md §3.3 */
 
-.reader[data-reader-theme='paper'] {
+/* 选择器刻意不写 .reader —— 外观面板里的预览块要复用同一套变量，
+   而它在 .reader 之外。这里只设置变量，不会影响别的属性。 */
+
+[data-reader-theme='paper'] {
   --reader-bg: #fdfbf7;
   --reader-surface: #eae6de;
   --reader-text: #1a1a1a;
@@ -149,7 +152,7 @@
   --reader-rule: #e8e3da;
 }
 
-.reader[data-reader-theme='sepia'] {
+[data-reader-theme='sepia'] {
   --reader-bg: #f4ecd8;
   --reader-surface: #e3d8be;
   --reader-text: #3b3327;
@@ -158,7 +161,7 @@
   --reader-rule: #ded2b4;
 }
 
-.reader[data-reader-theme='night'] {
+[data-reader-theme='night'] {
   --reader-bg: #14161a;
   --reader-surface: #0e1013;
   --reader-text: #b9b5ae;
@@ -167,7 +170,7 @@
   --reader-rule: #23272d;
 }
 
-.reader[data-reader-theme='oled'] {
+[data-reader-theme='oled'] {
   --reader-bg: #000000;
   --reader-surface: #0a0a0a;
   --reader-text: #a8a8a8;
@@ -538,6 +541,15 @@ button {
   pointer-events: none;
 }
 
+/* ---------- 沉浸模式 ---------- */
+
+/* 沉浸 = 藏掉进度条，顶栏只在点中间区时临时浮现（和视频播放器一个套路）。
+   注意不去动内容区的高度：TXT 的正文是重新分栏的，给工具栏腾出的那几十像素
+   一旦变化就要重排、位置锚点也得重算，换来的收益不值得。 */
+.reader.immersive .reader-bottom {
+  display: none;
+}
+
 .reader-title {
   flex: 1;
   font-size: var(--fs-base);
@@ -545,6 +557,25 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 书签开关：空心 = 未加，实心 = 已加。
+   用「形状」区分而不是换颜色 —— 顶栏里已经有主题色块在表示颜色了，
+   再靠颜色说事会互相干扰；实心/空心一眼可辨，也不需要额外的文案。 */
+.bm-btn svg {
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.bm-btn[data-on='1'] {
+  color: var(--ui-accent);
+}
+
+.bm-btn[data-on='1'] svg {
+  fill: currentColor;
 }
 
 /* 阅读主题切换：色块即当前主题，按下循环切换（见 DESIGN.md §3.3） */
@@ -594,6 +625,14 @@ button {
   font-variant-numeric: tabular-nums;
   min-width: 68px;
   text-align: right;
+}
+
+/* TXT 底栏左侧的章序号：窄屏上顶栏的章节标题会被隐藏，信息在这里兜底 */
+.scrub-chap {
+  font-size: var(--fs-sm);
+  color: var(--ui-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* ---------- 目录抽屉 ---------- */
@@ -927,6 +966,76 @@ button {
   margin: 0 0 6px;
 }
 
+/* ---- 书签 ---- */
+
+.bm-item {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+/* 当前页正好是这个书签 —— 与目录里「当前章高亮」同一套语言 */
+.bm-item.on {
+  background: var(--ui-accent-soft);
+}
+
+.bm-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 10px var(--sp-2) 10px var(--sp-4);
+}
+
+.bm-where {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.bm-pg {
+  flex: none;
+  font-size: var(--fs-sm);
+  color: var(--ui-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 章标题与摘要都压成一行省略号：列表的节奏是「一行标题 + 一行摘要」，
+   任何一处换行都会把一个书签撑成四五行的块，反而不好扫。 */
+.bm-label {
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--ui-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bm-snippet {
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--ui-text-muted);
+  border-left: 3px solid var(--ui-accent);
+  padding-left: var(--sp-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bm-del {
+  flex: none;
+  padding: 0 14px;
+  color: var(--ui-text-muted);
+  font-size: var(--fs-base);
+}
+
+.bm-del:active {
+  color: var(--ui-danger);
+}
+
 /* ---- 笔记 ---- */
 
 .note-item {
@@ -1033,10 +1142,28 @@ button {
   color: var(--ui-text);
 }
 
-/* 顶部工具栏按钮多，窄屏优先保证可点，标题让位 */
+/* 顶部工具栏按钮多，窄屏优先保证可点，标题让位
+   （TXT 的章节与页码信息同时出现在底部进度条上，隐藏不会丢信息） */
 @media (max-width: 560px) {
-  .reader-title {
+  .reader-title,
+  .txt-head {
     display: none;
+  }
+
+  /* 手机竖屏的工具栏保不住这么多按钮，把「有替代入口」的收起来：
+     - PDF 的 ± 缩放：双指缩放已经接管，百分比读数留着，点一下就是复位
+     - TXT 的上一章 / 下一章：左右 1/3 点击与横滑本来就会跨章翻页
+     ≥560px 的屏幕上这些照常显示。 */
+  .toolbar-optional {
+    display: none;
+  }
+
+  /* 侧栏有四个标签了（目录 / 书签 / 笔记 / 搜索），340px 的抽屉在 360px 手机上
+     只剩 270px 可用 —— 默认的 tab 内边距会顶到「关闭」按钮上。
+     窄屏收一点内边距和字号，保证四个标签加两颗徽标仍然排得下。 */
+  .tab {
+    padding: 6px 7px;
+    font-size: var(--fs-sm);
   }
 }
 
@@ -1291,3 +1418,367 @@ button {
   color: var(--ui-text-muted);
 }
 
+/* ---------- TXT（流式格式）阅读器 ----------
+
+   分页原理：一章文字用 CSS 多栏排成 N 栏，**一栏就是一页**，
+   靠 viewport 的 scrollLeft 在第几栏之间移动。
+   column-fill:auto 是关键 —— 默认的 balance 会把内容平均摊到各栏，分页就废了。
+   栏宽 / 栏高由 JS 量出（TxtReader），栏间距用 --txt-gap 与 JS 里的常量对齐。 */
+
+.reader.txt-reader {
+  /* TXT 没有「纸」，正文底就是阅读区底 */
+  background: var(--reader-bg);
+  --txt-gap: 40px;
+}
+
+.txt-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  /* 大屏必须限宽 —— 正文横跨 1920px 是阅读器最典型的低级错误（DESIGN.md §4.2）。
+     34em 按中文 1em/字算约 34 字一行；小屏上 min() 取 100%，等于没限。
+     限在 stage 这一层而不是视口上，是为了让视口宽度就等于栏宽 ——
+     分栏 / 翻页的坐标换算全部依赖这个等式，加内边距会让它不成立。 */
+  max-width: calc(34 * var(--reader-size) + var(--reader-pad) * 2);
+  margin-inline: auto;
+}
+
+.txt-viewport {
+  position: absolute;
+  left: var(--reader-pad);
+  right: var(--reader-pad);
+  top: calc(var(--reader-pad) * 0.6 + 44px);
+  bottom: var(--reader-pad);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  /* pan-y：横向移动由代码接管（否则会变成自由滑动而不是整页翻动），
+     但不能用 none —— 那会把触屏上的长按划词也一起禁掉。 */
+  touch-action: pan-y;
+  overscroll-behavior: none;
+}
+
+.txt-viewport::-webkit-scrollbar {
+  display: none;
+}
+
+.txt-columns {
+  column-fill: auto;
+  color: var(--reader-text);
+  font-family: var(--reader-font);
+  font-size: var(--reader-size);
+  line-height: var(--reader-leading);
+  overflow-wrap: break-word;
+}
+
+.txt-p {
+  margin: 0 0 var(--reader-para-gap);
+  text-align: justify;
+  text-justify: inter-ideograph;
+  /* 别把一行的孤字留在栏首 / 栏尾 */
+  orphans: 2;
+  widows: 2;
+}
+
+.txt-p-title {
+  margin-bottom: calc(var(--reader-para-gap) * 2);
+  font-weight: 600;
+  text-align: left;
+}
+
+/* 高亮用半透明底色，而不是 PDF 那套 mix-blend-mode: multiply ——
+   夜间 / OLED 主题下 multiply 会把高亮压得看不见 */
+.txt-p mark {
+  background: none;
+  color: inherit;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.txt-p mark[data-color='yellow'] {
+  background: rgba(255, 224, 102, 0.42);
+}
+.txt-p mark[data-color='green'] {
+  background: rgba(159, 230, 160, 0.45);
+}
+.txt-p mark[data-color='blue'] {
+  background: rgba(158, 197, 254, 0.45);
+}
+.txt-p mark[data-color='pink'] {
+  background: rgba(249, 168, 212, 0.45);
+}
+
+.txt-columns ::selection {
+  background: var(--reader-accent);
+  color: var(--reader-bg);
+}
+
+/* 顶部中间的「章节名 + 第几页」两行，替掉 PDF 那种单行标题 */
+.txt-head {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.txt-head-title {
+  font-size: var(--fs-base);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.txt-head-sub {
+  font-size: var(--fs-xs);
+  color: var(--ui-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- EPUB 阅读器 ----------
+   版式完全复用上面那套 .txt-*（分栏分页、位置模型与 TXT 一致，见 lib/epubDom.js），
+   这里只补「XHTML 拍成段落」之后才需要的东西：标题层级、引用、列表符号、图片、内链。
+   一句话约束：**凡是显示出来但不算字符的修饰都只能用 CSS 画**（符号、线），
+   一旦写成文本，段上的 data-start 与 DOM 里的字符数就对不上，划词与高亮全会偏。 */
+
+.epub-reader .txt-p[data-kind='h'] {
+  margin-bottom: calc(var(--reader-para-gap) * 2);
+  text-align: left;
+  break-inside: avoid;
+}
+
+.epub-reader .txt-p[data-level='1'] {
+  font-size: 1.34em;
+}
+.epub-reader .txt-p[data-level='2'] {
+  font-size: 1.2em;
+}
+.epub-reader .txt-p[data-level='3'] {
+  font-size: 1.07em;
+}
+.epub-reader .txt-p[data-level='4'],
+.epub-reader .txt-p[data-level='5'],
+.epub-reader .txt-p[data-level='6'] {
+  font-size: 1em;
+}
+
+/* 带图片的段不要被分栏从中间切开 */
+.epub-reader .txt-p[data-img] {
+  break-inside: avoid;
+}
+
+.epub-reader .txt-p[data-kind='quote'] {
+  padding-left: 0.9em;
+  border-left: 2px solid var(--reader-rule);
+  color: var(--reader-text-muted);
+}
+
+.epub-reader .txt-p[data-kind='caption'] {
+  font-size: 0.9em;
+  color: var(--reader-text-muted);
+  text-align: center;
+}
+
+.epub-reader .txt-p[data-kind='pre'] {
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+.epub-reader .txt-p[data-kind='hr'] hr {
+  width: 40%;
+  margin: 0.6em auto;
+  border: 0;
+  border-top: 1px solid var(--reader-rule);
+}
+
+/* 列表符号用 ::before 画（悬挂缩进），**不进文本** */
+.epub-reader .txt-p[data-bullet] {
+  padding-left: 1.3em;
+  text-indent: -1.3em;
+  text-align: left;
+}
+
+.epub-reader .txt-p[data-bullet]::before {
+  content: attr(data-bullet) ' ';
+  opacity: 0.7;
+}
+
+.epub-reader img {
+  display: block;
+  max-width: 100%;
+  /* 高度上限跟着栏高走：分栏排版里一张高图会把整栏撑乱 */
+  max-height: var(--reader-col-h, 60vh);
+  width: auto;
+  height: auto;
+  margin: 0.5em auto;
+  border-radius: var(--radius-sm);
+}
+
+/* 书内链接：做成 span（不能是 <a href="#...">，那会改动 hash 路由，把人踢出阅读器） */
+.epub-reader [data-frag] {
+  color: var(--reader-accent);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+/* ---------- 外观设置面板 ---------- */
+
+.appearance-preview {
+  margin-bottom: var(--sp-4);
+  padding: var(--sp-4);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-sm);
+  background: var(--reader-bg);
+  color: var(--reader-text);
+  font-family: var(--reader-font);
+  font-size: var(--reader-size);
+  line-height: var(--reader-leading);
+}
+
+.appearance-preview p {
+  margin: 0 0 var(--reader-para-gap);
+}
+
+.appearance-row {
+  display: grid;
+  grid-template-columns: 64px 1fr 56px;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+
+.appearance-row > label {
+  font-size: var(--fs-base);
+  color: var(--ui-text-muted);
+}
+
+.appearance-row input[type='range'] {
+  width: 100%;
+  accent-color: var(--ui-accent);
+  height: 24px;
+}
+
+.appearance-val {
+  font-size: var(--fs-sm);
+  text-align: right;
+  color: var(--ui-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.theme-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.theme-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px 6px 8px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-full);
+  font-size: var(--fs-sm);
+}
+
+.theme-opt.on {
+  border-color: var(--ui-accent);
+  background: var(--ui-accent-soft);
+}
+
+
+/* ---------- 显示面板（常亮 / 沉浸 / 主题） ---------- */
+
+/* 桌面端显示成一枚居中的小卡片，手机上是贴底的抽屉 —— 与 .modal 同一套骨架，
+   只是宽度更收敛、行距更松，因为这里全是开关和一行说明。 */
+.display-menu .modal-card {
+  width: min(420px, 100%);
+}
+
+/* 手机上贴底：这三个开关是阅读中途伸手去够的，贴在拇指够得到的下沿比居中更好按 */
+@media (max-width: 560px) {
+  .display-menu {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .display-menu .modal-card {
+    width: 100%;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+.display-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: 13px 2px;
+  text-align: left;
+  border-bottom: 1px solid var(--ui-border);
+  font-size: var(--fs-base);
+  color: var(--ui-text);
+}
+
+.display-row:last-child {
+  border-bottom: 0;
+}
+
+.display-row:disabled {
+  opacity: 0.55;
+}
+
+.display-label {
+  flex: 0 0 auto;
+}
+
+/* 「此设备不支持」这类说明靠右对齐，别和标签挤在一起 */
+.display-note {
+  flex: 1;
+  text-align: right;
+  font-size: var(--fs-sm);
+  color: var(--ui-text-muted);
+}
+
+.display-arrow {
+  flex: 0 0 auto;
+  font-size: var(--fs-xl);
+  line-height: 1;
+  color: var(--ui-text-muted);
+}
+
+/* 开关：纯 CSS 画，避免为了一个控件引入图标资源 */
+.switch {
+  flex: 0 0 auto;
+  position: relative;
+  width: 42px;
+  height: 24px;
+  border-radius: var(--radius-full);
+  background: var(--ui-border);
+  transition: background var(--dur-1) var(--ease-out);
+}
+
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform var(--dur-1) var(--ease-out);
+}
+
+.switch.on {
+  background: var(--ui-accent);
+}
+
+.switch.on::after {
+  transform: translateX(18px);
+}
