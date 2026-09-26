@@ -345,6 +345,17 @@
         await sleep(150)
         root = makeEpub()
         await until(() => vp() && vp().classList.contains('scroll-flow'), 14000)
+        {
+          const dbg = await db.progress.get(re.id)
+          log(`DBG remount: progress=${JSON.stringify({ ci: dbg?.chapterIndex, co: dbg?.charOffset })} ek=${ek} n=${segs().length}`)
+          log('DBG seg starts = ' + segs().map((s) => s.dataset.start).join(','))
+          let ticks = 0
+          const iv = setInterval(() => {
+            ticks++
+            log(`DBG t+${ticks * 500}ms topIdx=${topIdx()} chap=${chapLabel()} scrollTop=${vp()?.scrollTop}`)
+            if (ticks >= 10) clearInterval(iv)
+          }, 500)
+        }
         const eback = await until(() => (topIdx() === ek ? topIdx() : null), 12000)
         assertEq('EPUB 重挂后回到离开时的那一段', eback, ek)
 
@@ -417,7 +428,7 @@
         ok('★ 收起时点右边缘 → 只唤出工具栏', !uiOff())
         assertEq('   …位置没动', sig(), s0)
 
-        // 展开状态：中间收起（不翻页）；两侧翻页（保留桌面鼠标的习惯）
+        // 展开状态：点哪儿都只是切换工具栏。翻页交给键盘 / 滑动 / 底栏「‹ ›」
         const s1 = sig()
         clickAt(0.5)
         await until(() => uiOff(), 3000)
@@ -427,8 +438,9 @@
         await until(() => !uiOff(), 3000)
         const s2 = sig()
         clickAt(0.92)
-        const s3 = await until(() => (sig() !== s2 ? sig() : null), 5000)
-        ok(`展开时点右边缘 → 翻页（${s2} → ${s3}）`, !!s3)
+        await sleep(320)
+        ok('★ 展开时点右边缘 → 也只是收起，绝不翻页', uiOff())
+        assertEq('   …位置没动', sig(), s2)
 
         root.unmount()
         await sleep(120)
@@ -438,12 +450,19 @@
         savePrefs({ readerFlow: 'scroll' })
         root = makeTxt2()
         ok('滚动模式挂起来了', !!(await until(() => vp() && vp().classList.contains('scroll-flow'), 9000)))
+        // 前言章只有 2 段，滑杆 / 百分比没法测 —— 先进正文章
+        await clickTopBtn('下一章')
+        await until(() => /出发/.test(host.querySelector('.txt-head-title')?.textContent || ''), 6000)
         const n2 = await until(() => (segs().length > 4 ? segs().length : null), 6000)
         ok(`这一章有 ${n2} 段`, !!n2)
+        // 章首百分比（此时还没滚，只有章基点贡献）
+        const pctAt = () => parseInt((host.querySelector('.txt-head-sub')?.textContent || '').match(/(\d+)%/)?.[1] ?? '0', 10)
+        const pctTop = pctAt()
         setRange(host.querySelector('.reader-bottom input[type=range]'), Math.max(1, Math.floor(n2 / 2)) + 1)
         await sleep(700)
         const st0 = vp().scrollTop
         ok(`已滚到章中（scrollTop=${st0}）`, st0 > 0)
+        ok(`★ 顶栏百分比实时更新（章首 ${pctTop}% → 章中 ${pctAt()}%）`, await until(() => pctAt() > pctTop, 4000))
 
         ok('前置：工具栏已收起', await shutUi())
         const cs0 = chapLabel()

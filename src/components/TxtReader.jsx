@@ -51,6 +51,9 @@ export default function TxtReader({ bookId, title, onBack }) {
   const [chapter, setChapter] = useState(0)
   const [page, setPage] = useState(0)
   const [pages, setPages] = useState(1)
+  // 全书实时进度（%）：章节基点 + 章内锚点插值。随翻页 / 滚动不断刷新，
+  // 不再是只看章号的粗粒度值；null = 还没量出来，回退到章号百分比
+  const [finePct, setFinePct] = useState(null)
   const [box, setBox] = useState({ w: 0, h: 0 })
   const [ui, setUi] = useState(true)
   const [drawer, setDrawer] = useState(false)
@@ -283,12 +286,25 @@ export default function TxtReader({ bookId, title, onBack }) {
     [chap, geo]
   )
 
+  /** 全书实时百分比：章节起点 + 章内锚点 ÷ 全书字符数。只依赖 ref，随时可调 */
+  const updateFinePct = useCallback(() => {
+    const d = docRef.current
+    const c = d?.chapters?.[chapterRef.current]
+    if (!d || !c) return
+    const abs = (c.start ?? 0) + (anchorRef.current || 0)
+    setFinePct(Math.max(0, Math.min(100, Math.round((abs / Math.max(1, d.text.length)) * 100))))
+  }, [])
+
   /** 换章。charOffset 是章内偏移；atEnd=true 时定位到该章最后一页（滚动模式下即滚到底） */
   const goChapter = useCallback((i, charOffset = 0, atEnd = false) => {
     const n = docRef.current?.chapters?.length ?? 0
     if (!n) return
     const t = Math.max(0, Math.min(Math.round(i), n - 1))
     pendingAnchorRef.current = atEnd ? null : { charOffset }
+    // 立刻把锚点记到目标位置：换章加载期间若退出，兜底 flush 才不会把
+    // 上一章的偏移混着新章号写进进度
+    anchorRef.current = Math.max(0, charOffset || 0)
+    updateFinePct()
     pendingEndRef.current = atEnd
     // 用户已经主动翻过页，之后的页码变化都可以记账了
     restoredRef.current = true
@@ -548,7 +564,9 @@ export default function TxtReader({ bookId, title, onBack }) {
     if (!seg?.el) return
     const abs = Number(seg.el.dataset.start)
     if (Number.isFinite(abs)) anchorRef.current = Math.max(0, abs - (chap?.start ?? 0))
-  }, [page, phase, paras, chap, colW, colH, geo, flow, topSegInFlow])
+    // page 变化即刷新全书百分比（翻页 smooth 滚动 / 滚动模式都会驱动 page）
+    updateFinePct()
+  }, [page, phase, paras, chap, colW, colH, geo, flow, topSegInFlow, updateFinePct])
 
   const onScroll = useCallback(() => {
     if (rafRef.current) return
@@ -752,41 +770,18 @@ export default function TxtReader({ bookId, title, onBack }) {
   }, [nextPage, prevPage, onBack, drawer, appearance, menu, backToPrev])
 
   /**
-   * 点屏幕。
+   * 点屏幕 = 开关工具栏。两种版式、工具栏收起与否，都是同一条规则，绝不做别的。
    *
-   * 工具栏 3.5 秒后会自动收起，所以「点一下空白把工具栏唤回来」是最高频的动作，
-   * 它绝不能被翻页抢走 —— 旧实现不分状态地按左/中/右分区，工具栏收起时点两侧就是翻页，
-   * 翻完页工具栏又自己收了，人于是**永远调不出工具栏**。
-   *
-   *  · 工具栏**收起**时 → 点哪儿都只负责唤出，不翻页；
-   *  · 工具栏**展开**时 → 滚动模式下点哪儿都只负责收起（滚动模式里「翻页」= 滚一屏，
-   *    被一次误点触发很难受）；翻页模式下中间收起、左右各 1/4 翻页。
-   *
-   * 翻页模式下两侧留窄一点（1/4）是为了把「中间空白」这个最顺手的落点让给工具栏。
+   * 旧实现按左/中/右分区翻页：工具栏 3.5 秒自动收起后，「点空白唤出」和「点两侧翻页」
+   * 永远在打架，判定全靠猜。现在翻页只交给滑动手势（翻页模式左右滑）、键盘方向键
+   * 和底栏「‹ ›」按钮 —— 点屏幕只干一件事（DESIGN.md §15.8）。
    */
-  const onStageClick = useCallback(
-    (e) => {
-      if (popoverRef.current) return
-      const sel = window.getSelection()
-      if (sel && !sel.isCollapsed) return
-      if (!ui) {
-        setUi(true)
-        return
-      }
-      if (flowRef.current === 'scroll') {
-        setUi(false)
-        return
-      }
-      const vp = vpRef.current
-      if (!vp) return
-      const r = vp.getBoundingClientRect()
-      const rel = (e.clientX - r.left) / Math.max(1, r.width)
-      if (rel < 0.25) prevPage()
-      else if (rel > 0.75) nextPage()
-      else setUi(false)
-    },
-    [ui, nextPage, prevPage]
-  )
+  const onStageClick = useCallback(() => {
+    if (popoverRef.current) return
+    const sel = window.getSelection()
+    if (sel && !sel.isCollapsed) return
+    setUi((v) => !v)
+  }, [])
 
   /* ---------------- 划词高亮 ---------------- */
 
@@ -1015,7 +1010,8 @@ export default function TxtReader({ bookId, title, onBack }) {
     )
   }
 
-  const pct = chapterPercent(chapter, Math.max(1, total))
+  // 顶栏 / 底栏的百分比：优先用全书实时值（章基点 + 章内锚点），量不出来再退回章号
+  const pct = finePct ?? chapterPercent(chapter, Math.max(1, total))
 
   return (
     <div
@@ -1023,7 +1019,13 @@ export default function TxtReader({ bookId, title, onBack }) {
       data-reader-theme={theme}
       style={readerStyle}
     >
-      <div className="txt-stage" onClick={onStageClick}>
+      {/* 长按选词时压制系统「复制/全选」气泡：contextmenu 一律拦下（选区本身保留，
+          交给自家的 SelectionPopover），否则原生菜单和笔记弹窗同时弹出来打架 */}
+      <div
+        className="txt-stage"
+        onClick={onStageClick}
+        onContextMenu={(e) => e.preventDefault()}
+      >
         <div
           className={`txt-viewport${flow === 'scroll' ? ' scroll-flow' : ''}`}
           ref={vpRef}
@@ -1179,6 +1181,15 @@ export default function TxtReader({ bookId, title, onBack }) {
           <span className="scrub-chap">
             第 {chapter + 1}/{total} 章
           </span>
+          {/* 桌面鼠标没有滑动手势，点屏幕又只负责工具栏 —— 翻页给两个固定按钮 */}
+          <button
+            className="btn btn-sm scrub-btn"
+            onClick={prevPage}
+            title="上一页"
+            aria-label="上一页"
+          >
+            ‹
+          </button>
           {flow === 'scroll' ? (
             <>
               {/* 滚动模式下没有「第几页」，滑杆改成「第几段」—— 拖一下就能在节内定位 */}
@@ -1205,6 +1216,14 @@ export default function TxtReader({ bookId, title, onBack }) {
               </span>
             </>
           )}
+          <button
+            className="btn btn-sm scrub-btn"
+            onClick={nextPage}
+            title="下一页"
+            aria-label="下一页"
+          >
+            ›
+          </button>
         </div>
       </div>
 

@@ -577,8 +577,7 @@
           host.querySelector('.reader-top').className.includes('hidden'),
           true
         )
-        // 点中间区能临时唤出工具栏（否则用户找不到出口）。
-        // 必须点正中间 —— 左右 1/3 是翻页区，点那里会翻页而不是唤出工具栏
+        // 点屏幕任意位置都能唤出工具栏（点击只负责开关，不再按分区翻页）
         {
           const r = vp().getBoundingClientRect()
           vp().dispatchEvent(

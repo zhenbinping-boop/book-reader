@@ -723,6 +723,15 @@ button {
   height: 24px;
 }
 
+/* 底栏「‹ ›」固定翻页按钮：桌面鼠标没有滑动手势、点屏幕又只负责工具栏 */
+.scrub-btn {
+  flex: none;
+  min-width: 30px;
+  padding-inline: 6px;
+  font-size: 17px;
+  line-height: 1;
+}
+
 .scrub-num {
   font-size: var(--fs-sm);
   color: var(--ui-text-muted);
@@ -1540,6 +1549,11 @@ button {
   flex: 1;
   min-height: 0;
   width: 100%;
+  /* 长按选词做笔记：压制系统自带的「复制 / 全选」气泡（iOS touch-callout、
+     Android contextmenu 由 JSX 拦截）。选区本身保留，交给自家的 SelectionPopover */
+  -webkit-touch-callout: none;
+  -webkit-user-select: text;
+  user-select: text;
   /* 大屏必须限宽 —— 正文横跨 1920px 是阅读器最典型的低级错误（DESIGN.md §4.2）。
      34em 按中文 1em/字算约 34 字一行；小屏上 min() 取 100%，等于没限。
      限在 stage 这一层而不是视口上，是为了让视口宽度就等于栏宽 ——

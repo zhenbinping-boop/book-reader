@@ -192,12 +192,21 @@
         ok('多栏确实横向溢出', cols().scrollWidth > vp().clientWidth + 40)
 
         const rc = vp().getBoundingClientRect()
+        // 点击语义（新）：点屏幕只开关工具栏，翻页交给键盘 / 滑动 / 底栏「‹ ›」按钮
+        const wasHidden = host.querySelector('.reader-top').className.includes('hidden')
         vp().dispatchEvent(new MouseEvent('click', { clientX: rc.right - 10, clientY: rc.top + 30, bubbles: true }))
-        ok('点右侧翻到下一页', await until(() => (currentPage() === 1 ? true : null), 2500))
+        ok(
+          '点右边缘只开关工具栏（不翻页）',
+          await until(() => host.querySelector('.reader-top').className.includes('hidden') !== wasHidden, 2000)
+        )
+        ok('   …位置没动（仍是第 1 页）', currentPage() === 0)
         vp().dispatchEvent(new MouseEvent('click', { clientX: rc.left + 10, clientY: rc.top + 30, bubbles: true }))
-        ok('点左侧回上一页', await until(() => (currentPage() === 0 ? true : null), 2500))
+        ok('再点左边缘 → 工具栏切回', await until(() => host.querySelector('.reader-top').className.includes('hidden') === wasHidden, 2000))
+        ok('   …位置仍没动', currentPage() === 0)
         window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
         ok('方向键翻页生效', await until(() => (currentPage() === 1 ? true : null), 2500))
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+        ok('方向键回上一页生效', await until(() => (currentPage() === 0 ? true : null), 2500))
 
         // 滑杆跳页（同时也是「位置锚点跟着走」的前置）
         setNativeValue(host.querySelector('.reader-bottom input[type=range]'), 1)
@@ -283,8 +292,8 @@
 
           // 翻页**不该**进栈：这里翻一下再按 ↩，退到的必须是栈里那条「跳转」记录（第 2 节），
           // 而不是「上一页 / 上一节」。翻页若入栈，这一步会退成第 4 节或第 5 节。
-          const r2 = vp().getBoundingClientRect()
-          vp().dispatchEvent(new MouseEvent('click', { clientX: r2.right - 10, clientY: r2.top + 30, bubbles: true }))
+          // （点击已不负责翻页，这里用键盘翻）
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
           await sleep(300)
           ok('翻页后「↩」还在', !!backBtn())
           backBtn().click()

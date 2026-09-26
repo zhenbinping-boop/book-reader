@@ -93,6 +93,9 @@ export default function EpubReader({ bookId, title, onBack }) {
   const [jumpSeq, setJumpSeq] = useState(0)
   // 图片解码完版面会变，用这个自增触发一次重测
   const [measureSeq, setMeasureSeq] = useState(0)
+  // 全书实时进度（%）：章号 + 章内锚点插值。随翻页 / 滚动不断刷新；
+  // null = 还没量出来，回退到章号百分比
+  const [finePct, setFinePct] = useState(null)
 
   const {
     on: immersive,
@@ -121,8 +124,15 @@ export default function EpubReader({ bookId, title, onBack }) {
   const anchorRef = useRef(0)
   const jumpRef = useRef(null)
   const restoredRef = useRef(false)
+  // 恢复看门狗：滚动模式的「恢复」若赶上版面没定（图片晚到等），落点会偏。
+  // 恢复完成后 700ms 核对一次实际顶段，用户没动过且偏了就重新落一次。
+  const restoreWatchRef = useRef(0)
+  const restoreAbortRef = useRef(null)
+  const userMovedRef = useRef(false)
   const popoverRef = useRef(null)
   const touchRef = useRef(null)
+  // segs 的镜像：给不随 segs 重建的回调（如 syncAnchorFromScroll）读当前段列表用
+  const segsRef = useRef([])
   const prefsRef = useRef(loadPrefs())
   /** 版式也留一份 ref：滚动 / 翻页的分支都在回调里，不该把它们变成依赖（会重建一堆 useCallback） */
   const flowRef = useRef(loadPrefs().readerFlow)
@@ -153,6 +163,7 @@ export default function EpubReader({ bookId, title, onBack }) {
 
   // 段落必须属于「当前这一章」才能拿去排版，否则宁可当空
   const segs = bundle && bundle.chapter === chapter ? bundle.segs : EMPTY
+  segsRef.current = segs
   const pathToChapter = useMemo(
     () => new Map(chapters.map((c) => [c.path, c.index])),
     [chapters]
@@ -305,6 +316,9 @@ export default function EpubReader({ bookId, title, onBack }) {
     const vp = vpRef.current
     const w = boxRef.current.w
     if (!vp || !w) return
+    // 用户主动翻页 = 故意换位置：恢复看门狗作废（与 scrollToSeg 同一个理由）
+    clearTimeout(restoreWatchRef.current)
+    restoreAbortRef.current?.abort()
     const target = Math.max(0, Math.min(p, pagesRef.current - 1))
     const x = target * (w + GAP)
     if (smooth) vp.scrollTo({ left: x, behavior: 'smooth' })
@@ -343,6 +357,10 @@ export default function EpubReader({ bookId, title, onBack }) {
     const vp = vpRef.current
     const el = colRef.current?.children?.[idx]
     if (!vp || !el) return
+    // 滑杆 / 锚点跳转都是「故意换位置」：恢复看门狗作废。否则目录跳转后 700ms 内
+    // 一拖滑杆，看门狗会拿跳转时的旧锚点当标准，把视口又拽回去（踩过）。
+    clearTimeout(restoreWatchRef.current)
+    restoreAbortRef.current?.abort()
     vp.scrollTop += el.getBoundingClientRect().top - vp.getBoundingClientRect().top
   }, [])
 
@@ -352,6 +370,40 @@ export default function EpubReader({ bookId, title, onBack }) {
       scrollToSeg(segmentAt(list, Math.max(0, charOffset || 0)))
     },
     [scrollToSeg]
+  )
+
+  /** 恢复看门狗（滚动模式）：700ms 后核对实际顶段，用户没动过且偏了就重新落一次。幂等。 */
+  const armRestoreWatch = useCallback(
+    (off, list) => {
+      clearTimeout(restoreWatchRef.current)
+      restoreAbortRef.current?.abort()
+      const vp = vpRef.current
+      if (!vp) return
+      userMovedRef.current = false
+      const ac = new AbortController()
+      restoreAbortRef.current = ac
+      const mark = () => {
+        userMovedRef.current = true
+      }
+      vp.addEventListener('touchstart', mark, { signal: ac.signal, passive: true })
+      vp.addEventListener('wheel', mark, { signal: ac.signal, passive: true })
+      vp.addEventListener('pointerdown', mark, { signal: ac.signal })
+      restoreWatchRef.current = setTimeout(() => {
+        restoreWatchRef.current = 0
+        try {
+          ac.abort()
+        } catch {
+          /* 已 abort 也无所谓 */
+        }
+        if (userMovedRef.current) return
+        const seg = topSegInFlow()
+        const cur = seg?.el ? Number(seg.el.dataset.start) : -1
+        const idx = segmentAt(list, Math.max(0, off || 0))
+        const want = idx >= 0 ? Number(list[idx]?.start ?? off) : off
+        if (cur >= 0 && cur !== want) scrollToOffset(off, list)
+      }, 700)
+    },
+    [topSegInFlow, scrollToOffset]
   )
 
   /** 章内字符偏移 → 应该在当前位置序号上的第几个单位 */
@@ -387,12 +439,34 @@ export default function EpubReader({ bookId, title, onBack }) {
     [offsetOfFragment]
   )
 
+  /**
+   * 全书实时百分比：章号 + 章内锚点插值。EPUB 的章没有全局字符基点（懒加载），
+   * 用「(当前章 + 章内进度) / 总章数」估算，章内进度 = 锚点 ÷ 本章文本长度。
+   */
+  const pctFromAnchor = useCallback((off) => {
+    const list = segsRef.current
+    const n = epubRef.current?.chapters?.length ?? 0
+    if (!n) return 0
+    const last = list[list.length - 1]
+    const len = last ? (last.start ?? 0) + (last.text?.length ?? 0) + 1 : 1
+    const intra = Math.max(0, Math.min(1, (off || 0) / Math.max(1, len)))
+    return Math.max(0, Math.min(100, Math.round(((chapterRef.current + intra) / n) * 100)))
+  }, [])
+
   /** 换章。charOffset 可以是数字，也可以是 { fragment }（目录 / 内链的深链） */
   const goChapter = useCallback((i, charOffset = 0, atEnd = false) => {
     const n = epubRef.current?.chapters?.length ?? 0
     if (!n) return
     const t = Math.max(0, Math.min(Math.round(i), n - 1))
     pendingAnchorRef.current = atEnd ? null : typeof charOffset === 'number' ? { charOffset } : charOffset
+    // 立刻把锚点记到目标位置：换章加载期间若退出，兜底 flush 才不会把
+    // 上一章的偏移混着新章号写进进度
+    if (typeof charOffset === 'number') anchorRef.current = Math.max(0, charOffset || 0)
+    // 新章的 segs 还没加载，章内进度先按 0 算，加载完由锚点同步刷新
+    setFinePct(Math.max(0, Math.min(100, Math.round((t / n) * 100))))
+    // 换章后位置正在变化，恢复看门狗作废
+    clearTimeout(restoreWatchRef.current)
+    restoreAbortRef.current?.abort()
     pendingEndRef.current = atEnd
     restoredRef.current = true
     const vp = vpRef.current
@@ -418,6 +492,9 @@ export default function EpubReader({ bookId, title, onBack }) {
     (dir) => {
       const vp = vpRef.current
       if (!vp) return
+      // 用户主动滑动 = 故意换位置：恢复看门狗作废（与 scrollToSeg 同一个理由）
+      clearTimeout(restoreWatchRef.current)
+      restoreAbortRef.current?.abort()
       const max = Math.max(0, vp.scrollHeight - vp.clientHeight)
       if (dir > 0 && vp.scrollTop >= max - 4) return goChapter(chapterRef.current + 1, 0, false)
       if (dir < 0 && vp.scrollTop <= 4) return goChapter(chapterRef.current - 1, 0, true)
@@ -602,6 +679,8 @@ export default function EpubReader({ bookId, title, onBack }) {
         jumpRef.current = null
         // 恢复完立刻记账，避免「刚打开就退出」把位置丢掉
         anchorRef.current = off
+        setFinePct(pctFromAnchor(off))
+        armRestoreWatch(off, segs)
       }
       return
     }
@@ -641,11 +720,12 @@ export default function EpubReader({ bookId, title, onBack }) {
       scrollToPage(Math.min(pageForCharOffset(off, segs), counted - 1), false)
       jumpRef.current = null
       anchorRef.current = off
+      setFinePct(pctFromAnchor(off))
       return
     }
     if (pageRef.current > counted - 1) scrollToPage(counted - 1, false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, colW, colH, segs, appearanceKey, chapter, jumpSeq, measureSeq, scrollToPage, flow, scrollToOffset])
+  }, [phase, colW, colH, segs, appearanceKey, chapter, jumpSeq, measureSeq, scrollToPage, flow, scrollToOffset, pctFromAnchor])
 
   /**
    * 把「当前页最上面那段文字」记成锚点。
@@ -680,13 +760,14 @@ export default function EpubReader({ bookId, title, onBack }) {
     const next = Math.max(0, abs)
     if (next === anchorRef.current) return
     anchorRef.current = next
+    setFinePct(pctFromAnchor(next))
     // 位置真的动了 → 重新排一次写回（不然只有 page 变化才会写）
     if (restoredRef.current) {
       dirtyRef.current = true
       clearTimeout(saveTimer.current)
       saveTimer.current = setTimeout(() => flushRef.current(), 600)
     }
-  }, [geo, topSegInFlow])
+  }, [geo, topSegInFlow, pctFromAnchor])
 
   useEffect(() => {
     if (phase !== 'ready' || !segs.length) return
@@ -798,6 +879,10 @@ export default function EpubReader({ bookId, title, onBack }) {
     return () => {
       window.removeEventListener('pagehide', flush)
       document.removeEventListener('visibilitychange', onHide)
+      clearTimeout(restoreWatchRef.current)
+      restoreAbortRef.current?.abort()
+      // 强制补写：dirty 标志若因任何竞态漏置，退出时仍以当前锚点兜底
+      if (restoredRef.current) dirtyRef.current = true
       flush()
     }
   }, [bookId])
@@ -991,23 +1076,12 @@ export default function EpubReader({ bookId, title, onBack }) {
         return
       }
 
-      if (!ui) {
-        setUi(true)
-        return
-      }
-      if (flowRef.current === 'scroll') {
-        setUi(false)
-        return
-      }
-      const vp = vpRef.current
-      if (!vp) return
-      const r = vp.getBoundingClientRect()
-      const rel = (e.clientX - r.left) / Math.max(1, r.width)
-      if (rel < 0.25) prevPage()
-      else if (rel > 0.75) nextPage()
-      else setUi(false)
+      // 点屏幕只干一件事：切换工具栏。翻页交给滑动 / 键盘 / 底栏「‹ ›」，
+      // 不再按落点分区 —— 工具栏 3.5 秒自动收起，「点空白唤回」是最高频动作，
+      // 被分区翻页抢走就会永远调不出工具栏（DESIGN.md §15.8）
+      setUi((v) => !v)
     },
-    [ui, nextPage, prevPage, followFragment]
+    [followFragment]
   )
 
   /* ---------------- 划词高亮 ---------------- */
@@ -1270,7 +1344,8 @@ export default function EpubReader({ bookId, title, onBack }) {
     )
   }
 
-  const pct = chapterPercent(chapter, Math.max(1, total))
+  // 顶栏 / 底栏的百分比：优先用全书实时值（章号 + 章内插值），量不出来再退回章号
+  const pct = finePct ?? chapterPercent(chapter, Math.max(1, total))
 
   return (
     <div
@@ -1278,7 +1353,13 @@ export default function EpubReader({ bookId, title, onBack }) {
       data-reader-theme={theme}
       style={readerStyle}
     >
-      <div className="txt-stage" onClick={onStageClick}>
+      {/* 长按选词时压制系统「复制/全选」气泡：contextmenu 一律拦下（选区本身保留，
+          交给自家的 SelectionPopover），否则原生菜单和笔记弹窗同时弹出来打架 */}
+      <div
+        className="txt-stage"
+        onClick={onStageClick}
+        onContextMenu={(e) => e.preventDefault()}
+      >
         <div
           className={`txt-viewport${flow === 'scroll' ? ' scroll-flow' : ''}`}
           ref={vpRef}
@@ -1427,6 +1508,15 @@ export default function EpubReader({ bookId, title, onBack }) {
           <span className="scrub-chap">
             第 {chapter + 1}/{total} 节
           </span>
+          {/* 桌面鼠标没有滑动手势，点屏幕又只负责工具栏 —— 翻页给两个固定按钮 */}
+          <button
+            className="btn btn-sm scrub-btn"
+            onClick={prevPage}
+            title="上一页"
+            aria-label="上一页"
+          >
+            ‹
+          </button>
           {flow === 'scroll' ? (
             <>
               {/* 滚动模式下没有「第几页」，滑杆改成「第几段」—— 拖一下就能在节内定位 */}
@@ -1453,6 +1543,14 @@ export default function EpubReader({ bookId, title, onBack }) {
               </span>
             </>
           )}
+          <button
+            className="btn btn-sm scrub-btn"
+            onClick={nextPage}
+            title="下一页"
+            aria-label="下一页"
+          >
+            ›
+          </button>
         </div>
       </div>
 

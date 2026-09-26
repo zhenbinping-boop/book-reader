@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Reader progress: 退出重进必须回到同一行文字</title>
+    <style>
+      body { font: 12px/1.5 monospace; padding: 12px; margin: 0; }
+      /* 又窄又矮：一章要跨好几屏，滚到「章中间」才有意义 */
+      #host { width: 280px; height: 320px; position: relative; border: 1px solid #888; overflow: hidden; }
+      #log { position: fixed; right: 0; top: 0; width: 620px; height: 100vh; background: #fff; z-index: 99999; padding: 10px; overflow: auto; border-left: 1px solid #ccc; }
+    </style>
+  </head>
+  <body>
+    <div id="host"></div>
+    <div id="log"></div>
+    <script>
+      window.__errs = []
+      window.addEventListener('error', (e) => {
+        window.__errs.push('WINDOW ERROR: ' + (e.message || e.error) + ' @ ' + (e.filename || '') + ':' + (e.lineno || ''))
+      })
+      window.addEventListener('unhandledrejection', (e) =>
+        window.__errs.push('REJECTION: ' + (e.reason && e.reason.message ? e.reason.message : e.reason))
+      )
+    </script>
+    <script type="module">
+      import '/src/styles.css'
+
+      const ENDPOINT = 'http://127.0.0.1:5178/log'
+      const IN_TARGET = location.pathname.endsWith('dev-progress.html')
+      const log = (m) => {
+        document.getElementById('log').innerHTML += `<div>${m}</div>`
+        if (IN_TARGET) { try { fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true }) } catch {} }
+      }
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+      const dump = () => window.__errs.forEach((e) => log(e))
+      let failed = 0
+      const assertEq = (label, got, want) => {
+        const pass = got === want
+        if (!pass) failed++
+        log(`${pass ? 'ok  ' : 'BAD '}${label}: ${JSON.stringify(got)}` + (pass ? '' : ' (want ' + JSON.stringify(want) + ')'))
+      }
+      const ok = (label, cond) => {
+        if (!cond) failed++
+        log(`${cond ? 'ok  ' : 'BAD '}${label}`)
+      }
+      const until = async (fn, ms = 8000, step = 50) => {
+        const t0 = Date.now()
+        for (;;) {
+          let v = null
+          try { v = fn() } catch { v = null }
+          if (v) return v
+          if (Date.now() - t0 > ms) return null
+          await sleep(step)
+        }
+      }
+
+      const host = document.getElementById('host')
+      const PREF_KEY = 'book-reader:prefs'
+
+      try {
+        log('boot')
+
+        const { db } = await import('/src/db.js')
+        const { savePrefs } = await import('/src/lib/prefs.js')
+        const { importFile } = await import('/src/lib/importer.js')
+        const React = (await import('react')).default
+        const { createRoot } = await import('react-dom/client')
+        const TxtReader = (await import('/src/components/TxtReader.jsx')).default
+        const EpubReader = (await import('/src/components/EpubReader.jsx')).default
+
+        await db.delete()
+        await db.open()
+        window.localStorage.removeItem(PREF_KEY)
+        log('db cleared')
+
+        const asFile = async (name, url, type) => new File([await (await fetch(url)).arrayBuffer()], name, { type })
+        const TXT_URL = '/@fs/D:/book-reader/samples/sample-utf8.txt'
+        const EPUB_URL = '/@fs/D:/book-reader/samples/sample.epub'
+
+        /* ---------- 公共工具 ---------- */
+        const vp = () => host.querySelector('.txt-viewport')
+        const cols = () => host.querySelector('.txt-columns')
+        const imgsDone = async () =>
+          !!(await until(() => [...host.querySelectorAll('.txt-p img')].every((im) => im.complete), 12000))
+        const topSegStart = () => {
+          const v = vp()
+          const c = cols()
+          if (!v || !c) return -1
+          const top = v.getBoundingClientRect().top
+          // 与阅读器 topSegInFlow 同一判据：第一段「跨过顶线」的
+          for (const el of c.children) {
+            if (el.getBoundingClientRect().bottom > top + 2) return Number(el.dataset.start)
+          }
+          const last = c.children[c.children.length - 1]
+          return last ? Number(last.dataset.start) : -1
+        }
+        const headSub = () => host.querySelector('.txt-head-sub')?.textContent ?? ''
+        const scrollSegToTop = (k) => {
+          const el = cols().children[k]
+          if (!el) return false
+          vp().scrollTop = el.offsetTop
+          return true
+        }
+        const key = (k) =>
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }))
+        // 停稳 + 防抖落库都要等：120ms 停稳判定 + 600ms 写回 + 余量
+        const SETTLE = 1400
+
+        /** 场景：滚到第 k 段 → 等 settle → 退出（delay 后卸载）→ 重进 → 位置必须回来 */
+        const roundTrip = async ({ mount, bookId, k, exitDelay, label, nav = 0, navBtn = '下一章' }) => {
+          let root = mount()
+          let ready = await until(() => vp() && cols()?.children?.length > 1, 12000)
+          // 样书开头是个 2 段的前言章，先进正文章再测
+          for (let i = 0; i < nav; i++) {
+            const btn = [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === navBtn)
+            if (btn) btn.click()
+            await sleep(900)
+          }
+          ready = await until(() => vp() && cols()?.children?.length > 3, 12000)
+          ok(`${label}：挂起来了`, !!ready)
+          if (!ready) {
+            log(`   …段数=${cols()?.children?.length} vp=${!!vp()} host=` + host.innerHTML.replace(/\s+/g, ' ').slice(0, 200))
+          }
+          await imgsDone()
+          ok(`${label}：滚到第 ${k} 段`, scrollSegToTop(k))
+          await sleep(exitDelay)
+          const before = topSegStart()
+          const prog = await db.progress.get(bookId)
+          ok(`${label}：退出前锚点=第 ${k} 段 (start=${before})`, before === Number(cols().children[k].dataset.start))
+          ok(`${label}：进度已落库 (chapterIndex=${prog?.chapterIndex}, charOffset=${prog?.charOffset})`, !!prog && prog.charOffset > 0)
+          if (exitDelay < 600) {
+            ok(`${label}：快速退出时进度也已在库`, !!prog && prog.charOffset > 0)
+          }
+
+          root.unmount()
+          await sleep(150)
+          host.innerHTML = ''
+
+          root = mount()
+          ok(`${label}：重进挂起来了`, !!(await until(() => vp() && cols()?.children?.length > 3, 12000)))
+          await imgsDone()
+          const got = await until(() => (topSegStart() === before ? before : null), 8000)
+          ok(`★ ${label}：重进回到同一段 (start=${got})`, got !== null)
+          const after = topSegStart()
+          if (after !== before) log(`   …实际落在 start=${after}，差了 ${Math.abs(after - before)} 字符`)
+          root.unmount()
+          await sleep(120)
+          host.innerHTML = ''
+        }
+
+        /* ================= 1. TXT 滚动模式 ================= */
+        {
+          const rt = await importFile(await asFile('sample-utf8.txt', TXT_URL, 'text/plain'))
+          savePrefs({ readerFlow: 'scroll' })
+          const mount = () => {
+            const r = createRoot(host)
+            r.render(React.createElement(TxtReader, { bookId: rt.id, title: 'sample', onBack: () => {} }))
+            return r
+          }
+          await roundTrip({ mount, bookId: rt.id, k: 3, exitDelay: SETTLE, label: 'TXT滚动·停稳退出', nav: 1 })
+          await roundTrip({ mount, bookId: rt.id, k: 4, exitDelay: 150, label: 'TXT滚动·立刻退出', nav: 0 })
+          await db.delete(); await db.open()
+        }
+
+        /* ================= 2. TXT 翻页模式 ================= */
+        {
+          const rt = await importFile(await asFile('sample-utf8.txt', TXT_URL, 'text/plain'))
+          savePrefs({ readerFlow: 'page' })
+          const mount = () => {
+            const r = createRoot(host)
+            r.render(React.createElement(TxtReader, { bookId: rt.id, title: 'sample', onBack: () => {} }))
+            return r
+          }
+          let root = mount()
+          ok('TXT翻页挂起来了', !!(await until(() => vp() && cols()?.children?.length > 1, 12000)))
+          // 先进正文章（前言章只有 1 页）
+          ;[...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '下一章')?.click()
+          await sleep(900)
+          key('ArrowRight'); await sleep(600)
+          key('ArrowRight'); await sleep(600)
+          const pg = () => host.querySelector('.scrub-num')?.textContent ?? ''
+          ok(`翻到第 3 页 (${pg()})`, (await until(() => pg().startsWith('3 /'), 4000)) !== null)
+          await sleep(SETTLE)
+          const sub1 = headSub()
+          root.unmount(); await sleep(150); host.innerHTML = ''
+
+          root = mount()
+          ok('TXT翻页重进挂起来了', !!(await until(() => vp() && cols()?.children?.length > 3, 12000)))
+          const got = await until(() => (host.querySelector('.scrub-num')?.textContent ?? '').startsWith('3 /'), 6000)
+          ok(`★ TXT翻页：重进回到第 3 页 (${host.querySelector('.scrub-num')?.textContent})`, !!got)
+          root.unmount(); await sleep(120); host.innerHTML = ''
+          await db.delete(); await db.open()
+        }
+
+        /* ================= 3. EPUB 滚动模式（用户复现的主场景） ================= */
+        {
+          const re = await importFile(await asFile('sample.epub', EPUB_URL, 'application/epub+zip'))
+          savePrefs({ readerFlow: 'scroll' })
+          const mount = () => {
+            const r = createRoot(host)
+            r.render(React.createElement(EpubReader, { bookId: re.id, title: '样例电子书', onBack: () => {} }))
+            return r
+          }
+          await roundTrip({ mount, bookId: re.id, k: 3, exitDelay: SETTLE, label: 'EPUB滚动·停稳退出' })
+          await roundTrip({ mount, bookId: re.id, k: 2, exitDelay: 150, label: 'EPUB滚动·立刻退出' })
+          await db.delete(); await db.open()
+        }
+
+        /* ================= 3.5 EPUB 滚动模式：图片章恢复（真实书籍的结构特征） ================= */
+        {
+          const re = await importFile(await asFile('sample.epub', EPUB_URL, 'application/epub+zip'))
+          savePrefs({ readerFlow: 'scroll' })
+          const mount = () => {
+            const r = createRoot(host)
+            r.render(React.createElement(EpubReader, { bookId: re.id, title: '样例电子书', onBack: () => {} }))
+            return r
+          }
+          // 第一遍：进到第 3 节（含图），滚到中间，退出
+          let root = mount()
+          ok('图片章：挂起来了', !!(await until(() => vp() && cols()?.children?.length > 1, 14000)))
+          for (let i = 0; i < 2; i++) {
+            ;[...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '下一节')?.click()
+            await sleep(900)
+          }
+          await imgsDone()
+          ok(`已到第 3 节 (${headSub()})`, headSub().includes('第 3/'))
+          ok(`第 3 节确实有图 (img=${host.querySelectorAll('.txt-columns img').length}, imgSeg=${host.querySelectorAll('[data-img]').length})`, host.querySelectorAll('.txt-columns img').length >= 1)
+          const segCount = cols().children.length
+          ok(`滚到第 ${Math.min(2, segCount - 1)} 段`, scrollSegToTop(Math.min(2, segCount - 1)))
+          await sleep(SETTLE)
+          await imgsDone()
+          const before = topSegStart()
+          ok(`图片章退出前锚点 start=${before}`, before >= 0)
+          root.unmount(); await sleep(150); host.innerHTML = ''
+
+          // 第二遍：重进，恢复必须落到图片章中间
+          root = mount()
+          ok('图片章：重进挂起来了', !!(await until(() => vp() && cols()?.children?.length > 1, 14000)))
+          await imgsDone()
+          ok(`重进仍在第 3 节 (${headSub()})`, (await until(() => headSub().includes('第 3/'), 8000)) !== null)
+          const got = await until(() => (topSegStart() === before ? before : null), 8000)
+          ok(`★ 图片章：重进回到同一段 (start=${got ?? topSegStart()})`, got !== null)
+          root.unmount(); await sleep(120); host.innerHTML = ''
+          await db.delete(); await db.open()
+        }
+
+        /* ================= 4. EPUB 滚动模式：换章后退出 ================= */        {
+          const re = await importFile(await asFile('sample.epub', EPUB_URL, 'application/epub+zip'))
+          savePrefs({ readerFlow: 'scroll' })
+          let root = null
+          const mount = () => {
+            const r = createRoot(host)
+            r.render(React.createElement(EpubReader, { bookId: re.id, title: '样例电子书', onBack: () => {} }))
+            return r
+          }
+          root = mount()
+          ok('EPUB 挂起来了', !!(await until(() => vp() && cols()?.children?.length > 3, 14000)))
+          await imgsDone()
+          const nextBtn = () => [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '下一节')
+          ok('「下一节」按钮在', !!nextBtn())
+          nextBtn().click()
+          await sleep(SETTLE)
+          await imgsDone()
+          const sub = headSub()
+          ok(`换到第 2 节 (${sub})`, sub.includes('第 2/'))
+          const before = topSegStart()
+          const prog = await db.progress.get(re.id)
+          ok(`第 2 节进度落库 (charOffset=${prog?.charOffset})`, !!prog && prog.chapterIndex === 1)
+          root.unmount(); await sleep(150); host.innerHTML = ''
+
+          root = mount()
+          ok('重进挂起来了', !!(await until(() => vp() && cols()?.children?.length > 3, 14000)))
+          await imgsDone()
+          ok(`★ 换章后重进仍在第 2 节 (${headSub()})`, (await until(() => headSub().includes('第 2/'), 8000)) !== null)
+          ok(`★ 且位置还是退出时那段 (start=${topSegStart()} vs ${before})`, topSegStart() === before)
+          root.unmount(); await sleep(120); host.innerHTML = ''
+          await db.delete(); await db.open()
+        }
+
+        /* ================= 5. EPUB 翻页模式 ================= */
+        {
+          const re = await importFile(await asFile('sample.epub', EPUB_URL, 'application/epub+zip'))
+          savePrefs({ readerFlow: 'page' })
+          const mount = () => {
+            const r = createRoot(host)
+            r.render(React.createElement(EpubReader, { bookId: re.id, title: '样例电子书', onBack: () => {} }))
+            return r
+          }
+          let root = mount()
+          ok('EPUB翻页挂起来了', !!(await until(() => vp() && cols()?.children?.length > 3, 14000)))
+          await imgsDone()
+          key('ArrowRight'); await sleep(700)
+          await imgsDone()
+          const pg = () => host.querySelector('.scrub-num')?.textContent ?? ''
+          ok(`翻到第 2 页 (${pg()})`, (await until(() => pg().startsWith('2 /'), 4000)) !== null)
+          await sleep(SETTLE)
+          root.unmount(); await sleep(150); host.innerHTML = ''
+
+          root = mount()
+          ok('EPUB翻页重进挂起来了', !!(await until(() => vp() && cols()?.children?.length > 3, 14000)))
+          await imgsDone()
+          const got = await until(() => (host.querySelector('.scrub-num')?.textContent ?? '').startsWith('2 /'), 8000)
+          ok(`★ EPUB翻页：重进回到第 2 页 (${host.querySelector('.scrub-num')?.textContent})`, !!got)
+          root.unmount(); await sleep(120); host.innerHTML = ''
+        }
+
+        dump()
+        log(failed ? 'RESULT: FAIL (' + failed + ' 条断言未过)' : 'RESULT: PASS')
+        log('ALL DONE')
+      } catch (e) {
+        log('THROWN: ' + (e && e.message ? e.message : e))
+        log('stack: ' + (e && e.stack ? String(e.stack).split('\n').slice(0, 4).join(' | ') : ''))
+        dump()
+        log('ALL DONE')
+      }
+    </script>
+  </body>
+</html>

@@ -13,7 +13,7 @@
   顶栏一键切换、按设备记住；来回切版式不会丢位置
 - PDF 按页懒渲染 + 虚拟窗口（长文档只渲染视口附近的页，避免移动端内存崩溃）
 - 目录跳转（EPUB 支持 EPUB3 nav 与 EPUB2 NCX 两套目录，含嵌套层级）
-- 缩放（PDF 改渲染倍率；TXT / EPUB 改字号并吸附档位）、点击中央唤出工具栏
+- 缩放（PDF 改渲染倍率；TXT / EPUB 改字号并吸附档位）、点击屏幕开关工具栏（任何状态都不翻页），翻页靠滑动 / 键盘 / 底栏「‹ ›」按钮
 - 每本书独立记住「位置 + 模式 + 缩放」，断点续读
 - 四套阅读主题：`paper` 暖纸 / `sepia` 护眼 / `night` 暗纸 / `oled` 纯黑
   —— 正文对比度均达 WCAG AAA
@@ -168,7 +168,8 @@ python tools/browser_smoke.py http://localhost:5173/dev-bookmark.html
 | `dev-epub.html` | ZIP / EPUB 结构 / XHTML 展平（解析层） |
 | `dev-epub-reader.html` | EPUB 阅读器集成（分页、深链、图片重排、进度恢复） |
 | `dev-bookmark.html` | 书签：数据层 / 备份去重 / 侧栏 / 三种格式阅读器 |
-| `dev-flow.html` | 翻页 ↔ 竖向滚动两种版式（TXT + EPUB）与「添加图书」栏 |
+| `dev-flow.html` | 翻页 ↔ 竖向滚动两种版式、点击语义、实时百分比（TXT + EPUB） |
+| `dev-progress.html` | 进度落盘 / 恢复（滚动模式、翻页模式、图片章、换章退出） |
 | `dev-app.html` | App 级端到端（导入 → 书架 → 路由 → 阅读器 → 进度写回） |
 | `dev-history.html` | 位置后退栈 |
 | `dev-backup.html` | 备份导出 / 恢复 |
