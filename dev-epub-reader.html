@@ -354,6 +354,39 @@
           sel.removeAllRanges()
         }
 
+        /* ---------- 7.5 点空白关气泡：选区要清掉、且不被 pointerup 定时器立刻重开 ----------
+           旧坑：点 mask 只关气泡、选区还在 → onStageClick 的「正在划词」守卫吞掉点击
+           （工具栏唤不出），而 pointerup 定时器看到选区还在又把气泡弹回来 —— 两头堵。 */
+        {
+          const segEl = segEls()[1]
+          // 高亮回填会把段落文本切成多个节点，找一个放得下选区的文本节点
+          const tn = [...segEl.querySelectorAll('*'), segEl]
+            .flatMap((el) => (el.nodeType === 3 ? [el] : [...el.childNodes].filter((n) => n.nodeType === 3)))
+            .concat(segEl.nodeType === 3 ? [segEl] : [])
+            .find((n) => n.nodeValue.length >= 12)
+          const range = document.createRange()
+          range.setStart(tn, 2)
+          range.setEnd(tn, 10)
+          const sel = window.getSelection()
+          sel.removeAllRanges()
+          sel.addRange(range)
+          document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+          const pop = await until(() => host.querySelector('.popover'), 3000)
+          ok('再划一次弹出气泡', !!pop)
+          if (pop) {
+            host.querySelector('.popover-mask').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+            await until(() => !host.querySelector('.popover'), 2000)
+            ok('点空白关掉气泡', !host.querySelector('.popover'))
+            ok('关气泡时原生选区一并清掉', window.getSelection().isCollapsed)
+            // 模拟浏览器没来得及清的残留选区：350ms 守卫期内不准重开
+            sel.addRange(range)
+            document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+            await sleep(150)
+            ok('选区残留时 pointerup 也不会立刻重开气泡（350ms 守卫）', !host.querySelector('.popover'))
+            sel.removeAllRanges()
+          }
+        }
+
         // 切走再切回：高亮要按 page 重新贴回来
         await openPanel()
         outlineItem('第四章 归途').click()

@@ -76,6 +76,7 @@
         const asFile = async (name, url, type) => new File([await (await fetch(url)).arrayBuffer()], name, { type })
         const TXT_URL = '/@fs/D:/book-reader/samples/sample-utf8.txt'
         const EPUB_URL = '/@fs/D:/book-reader/samples/sample.epub'
+        const GIANT_URL = '/@fs/D:/book-reader/samples/sample-giant.epub'
 
         /* ---------- 公共工具 ---------- */
         const vp = () => host.querySelector('.txt-viewport')
@@ -240,6 +241,53 @@
           ok(`重进仍在第 3 节 (${headSub()})`, (await until(() => headSub().includes('第 3/'), 8000)) !== null)
           const got = await until(() => (topSegStart() === before ? before : null), 8000)
           ok(`★ 图片章：重进回到同一段 (start=${got ?? topSegStart()})`, got !== null)
+          root.unmount(); await sleep(120); host.innerHTML = ''
+          await db.delete(); await db.open()
+        }
+
+        /* ================= 3.7 EPUB 滚动模式：字符级锚点（一章一大块的转换件） =================
+           真实的转换件整章只有一个大 <div> 靠 <br> 换行 —— 段级锚点粒度退化成整章，
+           退出重进永远回章首。锚点必须细化到「视口顶线压在第几个字符上」。 */
+        {
+          const re = await importFile(await asFile('sample-giant.epub', GIANT_URL, 'application/epub+zip'))
+          savePrefs({ readerFlow: 'scroll' })
+          const { intraOffsetAtTop } = await import('/src/lib/txtSel.js')
+          const mount = () => {
+            const r = createRoot(host)
+            r.render(React.createElement(EpubReader, { bookId: re.id, title: '大段样例书', onBack: () => {} }))
+            return r
+          }
+          let root = mount()
+          ok('大段书：挂起来了', !!(await until(() => vp() && cols()?.children?.length > 1, 14000)))
+          await imgsDone()
+          // 整章正文 = 一个大段（h1 之外只有它）
+          const longIdx = [...cols().children].findIndex((el) => el.textContent.length >= 500)
+          ok('找到整章大段 (idx=' + longIdx + ', len=' + (cols()?.children?.[longIdx]?.textContent?.length ?? 0) + ')', longIdx >= 0)
+          const el = cols().children[longIdx]
+          const segStart = Number(el.dataset.start)
+          // 滚到大段正中间：顶线压在段内约一半处，段内偏移必须 > 100 字符
+          vp().scrollTop = el.offsetTop + el.offsetHeight / 2
+          await sleep(SETTLE)
+          const prog = await db.progress.get(re.id)
+          ok(`字符级锚点已落库 (${prog?.charOffset}，段首=${segStart})`, !!prog && prog.charOffset > segStart + 100)
+          const savedIntra = prog ? prog.charOffset - segStart : 0
+          root.unmount(); await sleep(150); host.innerHTML = ''
+
+          root = mount()
+          ok('大段书：重进挂起来了', !!(await until(() => vp() && cols()?.children?.length > 1, 14000)))
+          await imgsDone()
+          await sleep(900) // 恢复 + 恢复看门狗 700ms + 余量
+          ok('重进顶段仍是大段 (start=' + topSegStart() + ')', topSegStart() === segStart)
+          const topEl = [...cols().children].find((c) => Number(c.dataset.start) === topSegStart())
+          const gotOff = topEl ? Number(topEl.dataset.start) + intraOffsetAtTop(topEl, vp()) : -1
+          ok(
+            `★ 大段书重进回到同一字符 (实测=${gotOff}，落库=${prog?.charOffset}，差=${Math.abs(gotOff - (prog?.charOffset ?? 0))})`,
+            gotOff >= 0 && Math.abs(gotOff - (prog?.charOffset ?? -1)) <= 150
+          )
+          ok(
+            `落点确实在大段中段而不在段首 (段内偏移=${gotOff - segStart})`,
+            gotOff - segStart > 100
+          )
           root.unmount(); await sleep(120); host.innerHTML = ''
           await db.delete(); await db.open()
         }

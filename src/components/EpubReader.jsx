@@ -13,7 +13,13 @@ import {
 } from '../db'
 import { loadPrefs, savePrefs, resolveTheme, DEFAULT_PREFS, snapReaderSize } from '../lib/prefs'
 import { searchChapters, segmentAt, chapterPercent } from '../lib/txtText'
-import { firstSegOnPage, pageOfSegment, selectionOffsets } from '../lib/txtSel'
+import {
+  firstSegOnPage,
+  pageOfSegment,
+  selectionOffsets,
+  intraOffsetAtTop,
+  scrollSegToChar,
+} from '../lib/txtSel'
 import { openEpub, readChapter, readResource } from '../lib/epub'
 import { buildChapter, markedHtml } from '../lib/epubDom'
 import { resolveHref } from '../lib/zip'
@@ -130,6 +136,10 @@ export default function EpubReader({ bookId, title, onBack }) {
   const restoreAbortRef = useRef(null)
   const userMovedRef = useRef(false)
   const popoverRef = useRef(null)
+  // 弹窗刚被「点空白关掉」的时间戳：pointerup 的定时器会立刻再跑一次
+  // openForSelection，若此刻原生选区还在就会把弹窗又弹出来 —— 用户点掉弹窗、
+  // 点屏幕唤工具栏，结果弹窗阴魂不散（踩过）。350ms 内不再重开。
+  const dismissAtRef = useRef(0)
   const touchRef = useRef(null)
   // segs 的镜像：给不随 segs 重建的回调（如 syncAnchorFromScroll）读当前段列表用
   const segsRef = useRef([])
@@ -364,10 +374,23 @@ export default function EpubReader({ bookId, title, onBack }) {
     vp.scrollTop += el.getBoundingClientRect().top - vp.getBoundingClientRect().top
   }, [])
 
-  /** 章内字符偏移 → 滚到那一段（滚动模式的「跳转」） */
+  /**
+   * 章内字符偏移 → 滚到那个字符（滚动模式的「跳转」）。
+   *
+   * 字符级：先把目标段顶到视口顶，再按段内偏移补滚 —— 「一章一大块」的转换件
+   * （<br> 换行没有 <p>）段级粒度等于整章，只滚到段首就等于「永远回到章首」。
+   */
   const scrollToOffset = useCallback(
     (charOffset, list) => {
-      scrollToSeg(segmentAt(list, Math.max(0, charOffset || 0)))
+      const target = Math.max(0, charOffset || 0)
+      const idx = segmentAt(list, target)
+      if (idx < 0) return
+      scrollToSeg(idx)
+      const el = colRef.current?.children?.[idx]
+      const segStart = Number(el?.dataset?.start)
+      if (el && Number.isFinite(segStart)) {
+        scrollSegToChar(el, target - segStart, vpRef.current)
+      }
     },
     [scrollToSeg]
   )
@@ -746,7 +769,9 @@ export default function EpubReader({ bookId, title, onBack }) {
     if (!vp) return
     // 滚动模式的位置真相在竖向几何里，不经过「栏」
     let seg = null
+    let inScroll = false
     if (flowRef.current === 'scroll') {
+      inScroll = true
       seg = topSegInFlow()
     } else {
       const w = boxRef.current.w
@@ -757,7 +782,10 @@ export default function EpubReader({ bookId, title, onBack }) {
     if (!seg?.el) return
     const abs = Number(seg.el.dataset.start)
     if (!Number.isFinite(abs)) return
-    const next = Math.max(0, abs)
+    // 滚动模式细化到字符：顶线压在段内第几个字符上（「一章一大块」的书
+    // 只记段首等于整章丢进度）。分页模式的位置单位是「栏」，段首粒度已够。
+    const intra = inScroll ? intraOffsetAtTop(seg.el, vp) : 0
+    const next = Math.max(0, abs + intra)
     if (next === anchorRef.current) return
     anchorRef.current = next
     setFinePct(pctFromAnchor(next))
@@ -1091,18 +1119,36 @@ export default function EpubReader({ bookId, title, onBack }) {
     setPopover(null)
   }, [])
 
+  /**
+   * 「点空白 / Esc」关掉弹窗。必须连原生选区一起清掉：
+   * 选区残留会让 onStageClick 的「正在划词」守卫吞掉一切点击（工具栏唤不出），
+   * 而 pointerup 定时器看到选区还在又会把弹窗重新弹出来 —— 两头堵死。
+   */
+  const dismissPopover = useCallback(() => {
+    dismissAtRef.current = Date.now()
+    try {
+      window.getSelection()?.removeAllRanges()
+    } catch {
+      /* 忽略 */
+    }
+    closePopover()
+  }, [closePopover])
+
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Escape' && popoverRef.current) {
         e.stopPropagation()
-        closePopover()
+        dismissPopover()
       }
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [closePopover])
+  }, [dismissPopover])
 
   const openForSelection = useCallback(() => {
+    // 弹窗刚被点掉（350ms 内）不再重开：pointerup 定时器此刻可能还能量到
+    // 没来得及清的选区，重开会让「点空白关掉」永远关不掉
+    if (Date.now() - dismissAtRef.current < 350) return
     const cols = colRef.current
     if (!cols) return
     const data = selectionOffsets(cols)
@@ -1560,7 +1606,7 @@ export default function EpubReader({ bookId, title, onBack }) {
           onPick={pickColor}
           onDelete={removeMark}
           onCopy={copyText}
-          onClose={closePopover}
+          onClose={dismissPopover}
         />
       )}
 

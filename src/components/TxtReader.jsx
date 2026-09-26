@@ -97,6 +97,9 @@ export default function TxtReader({ bookId, title, onBack }) {
   const jumpRef = useRef(null)
   const restoredRef = useRef(false)
   const popoverRef = useRef(null)
+  // 弹窗刚被「点空白关掉」的时间戳：pointerup 的定时器会立刻再跑一次
+  // openForSelection，若此刻原生选区还在就会把弹窗又弹出来。350ms 内不再重开。
+  const dismissAtRef = useRef(0)
   const touchRef = useRef(null)
   const prefsRef = useRef(loadPrefs())
   /** 版式也留一份 ref：滚动 / 翻页的分支都在回调里，不该把它们变成依赖（会重建一堆 useCallback） */
@@ -790,18 +793,36 @@ export default function TxtReader({ bookId, title, onBack }) {
     setPopover(null)
   }, [])
 
+  /**
+   * 「点空白 / Esc」关掉弹窗。必须连原生选区一起清掉：
+   * 选区残留会让 onStageClick 的「正在划词」守卫吞掉一切点击（工具栏唤不出），
+   * 而 pointerup 定时器看到选区还在又会把弹窗重新弹出来 —— 两头堵死。
+   */
+  const dismissPopover = useCallback(() => {
+    dismissAtRef.current = Date.now()
+    try {
+      window.getSelection()?.removeAllRanges()
+    } catch {
+      /* 忽略 */
+    }
+    closePopover()
+  }, [closePopover])
+
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Escape' && popoverRef.current) {
         e.stopPropagation()
-        closePopover()
+        dismissPopover()
       }
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [closePopover])
+  }, [dismissPopover])
 
   const openForSelection = useCallback(() => {
+    // 弹窗刚被点掉（350ms 内）不再重开：pointerup 定时器此刻可能还能量到
+    // 没来得及清的选区，重开会让「点空白关掉」永远关不掉
+    if (Date.now() - dismissAtRef.current < 350) return
     const cols = colRef.current
     if (!cols || !chap) return
     const data = selectionOffsets(cols)
@@ -1233,7 +1254,7 @@ export default function TxtReader({ bookId, title, onBack }) {
           onPick={pickColor}
           onDelete={removeMark}
           onCopy={copyText}
-          onClose={closePopover}
+          onClose={dismissPopover}
         />
       )}
 

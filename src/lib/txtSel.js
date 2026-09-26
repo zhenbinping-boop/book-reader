@@ -164,6 +164,96 @@ export function selectionOffsets(columnsEl) {
   return { from: Math.min(a, b), to: Math.max(a, b), text: String(sel.toString() || ''), rect: range.getBoundingClientRect() }
 }
 
+/**
+ * 滚动模式的「字符级锚点」：视口顶线压在 segEl 文本的第几个字符上（段内偏移）。
+ *
+ * 段级锚点（dataset.start）在「一章一大块」的 EPUB 里粒度退化成整章 —— 转换件
+ * 常用 <br> 换行而不是 <p>，整章就是一段，退出再进来永远回到章首。
+ * 这里用 Range 逐字符量出「第一个底边越过视口顶线的字符」，把锚点细化到字符级。
+ * 二分查找：每个文本节点最多 O(log n) 次 getBoundingClientRect，无写入不触发重排。
+ *
+ * @param {Element} segEl 段元素（data-start 的宿主）
+ * @param {Element} vp    滚动容器（拿它的顶线做基准）
+ * @returns {number} 段内字符偏移；段里没有文本（图片段等）时返回 0
+ */
+export function intraOffsetAtTop(segEl, vp) {
+  if (!segEl || !vp) return 0
+  const line = vp.getBoundingClientRect().top + 1
+  let acc = 0
+  for (const n of textNodesOf(segEl)) {
+    const len = n.nodeValue.length
+    if (!len) continue
+    // 整个节点都在顶线上方 → 跳过
+    const lastRect = charRect(n, len - 1)
+    if (!lastRect || lastRect.bottom <= line) {
+      acc += len
+      continue
+    }
+    // 首字符就越线 → 顶线在这段文字之前，就是节点开头
+    const firstRect = charRect(n, 0)
+    if (firstRect && firstRect.bottom > line) return acc
+    // 跨线的节点：二分第一个底边越线的字符
+    let lo = 0
+    let hi = len - 1
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      const r = charRect(n, mid)
+      if (r && r.bottom > line) hi = mid
+      else lo = mid + 1
+    }
+    return acc + lo
+  }
+  return acc
+}
+
+/** 第 i 个字符的 client rect（i 从 0 起） */
+function charRect(node, i) {
+  try {
+    const r = document.createRange()
+    r.setStart(node, i)
+    r.setEnd(node, i + 1)
+    return r.getBoundingClientRect()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 把段内第 intra 个字符滚到视口顶线（字符级恢复用）。
+ *
+ * 先由调用方把这一段顶到视口顶（scrollToSeg），再按「目标字符的 rect 与视口顶的
+ * 差值」补一次 scrollTop —— 不猜 offsetParent 链，与 scrollToSeg 同一套几何。
+ * 目标字符量不出 rect（空段 / 边界）时不动，落回段首，至少不比以前差。
+ *
+ * @returns {boolean} 是否真的补滚了
+ */
+export function scrollSegToChar(segEl, intra, vp) {
+  if (!segEl || !vp || !(intra > 0)) return false
+  const nodes = textNodesOf(segEl)
+  let acc = 0
+  let node = null
+  let off = 0
+  for (const n of nodes) {
+    const len = n.nodeValue.length
+    if (acc + len > intra) {
+      node = n
+      off = intra - acc
+      break
+    }
+    acc += len
+  }
+  if (!node) {
+    // intra 落在段尾之后（滚进了 padding 区）：用最后一个字符兜底
+    if (!nodes.length) return false
+    node = nodes[nodes.length - 1]
+    off = Math.max(0, node.nodeValue.length - 1)
+  }
+  const rect = charRect(node, Math.min(off, node.nodeValue.length - 1))
+  if (!rect || (!rect.height && !rect.top && !rect.bottom)) return false
+  vp.scrollTop += rect.top - vp.getBoundingClientRect().top
+  return true
+}
+
 /** 把一段文字按高亮区间切成 [{ text, mark }]，渲染时就知道哪儿要包 <mark> */
 export function splitByMarks(text, segStart, ranges) {
   const hits = (ranges || [])
