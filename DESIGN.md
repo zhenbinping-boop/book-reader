@@ -722,3 +722,33 @@ SelectionPopover 的全屏 mask 负责点空白关闭，但**原生选区还留�
 - mask / Esc 关闭走 `dismissPopover`：**清掉原生选区 + 记关闭时间戳**；
 - `openForSelection` 在关闭后 350ms 内不再重开（挡住 pointerup 定时器的回弹）；
 - 点色块 / 复制 / 删除本来就清选区，不受影响。
+
+### 15.13 安卓（Blink 移动端）差异三则（2026-10-01）
+
+iOS 正常、安卓异常的三个问题，根因全在 Blink 与 WebKit 的行为差异，修法如下：
+
+- **`contextmenu` 在安卓上就是长按选词的手势本体**：`.txt-stage` 无条件
+  `preventDefault()` 会把选区一起杀死 → 笔记整个废掉（iOS 不走这条路，
+  所以只有安卓坏）。修法：只拦鼠标环境（`COARSE_POINTER` 为假时才拦），
+  触屏放行——系统菜单的压制在安卓上交给 `-webkit-touch-callout`（iOS）
+  与「弹出自家气泡盖在上面」（安卓不弹原生菜单当 contextmenu 放行时，
+  注意 `-webkit-user-select: text` 必须保留）。
+- **`loading="lazy"` 图会锁死恢复**：恢复前的 `hasPendingImages()` 等**整章**
+  图片就位，但视口远处的 lazy 图在滚过去之前永远不会加载 → 恢复被无限期
+  按住，每次打开都停在章首（安卓网络慢 / Chrome 懒加载阈值更激进，更易触发）。
+  修法：只等「目标锚点及以上」的图（落点只由上方内容决定）；分页模式同理由
+  目标段做 gate，总页数晚点修正是无害的。
+- **下方图片加载不得重落锚**：`onImg` 原本对任意图片加载都按滞后的
+  `anchorRef` 注入重排——读着读着被拽回去的「自动跳回开头」就是它。修法：
+  图片加载只在「位置还没落定」之外才注入锚点，且滚动模式重排时锚点恢复
+  用的就是字符级位置（§15.11），上方版面不变时视口不动。
+
+验证工具：`tools/android_cdp_check.py`（CDP 直连 headless Chrome，
+`Emulation.setEmulatedMedia` 声明 pointer/hover + `setTouchEmulationEnabled`
++ Pixel 尺寸 → 8 项断言）。注意两点：
+
+1. headless Chrome **做不出「长按选词」**（裸页面也选不上，浏览器 UI 层限制），
+   脚本里长按失败后退化为「注入合成选区 → pointerup 管线开气泡 → 点色块落库」，
+   应用侧链路照样全验；
+2. `.txt-viewport` 在滚动模式下高度超过窗口，触点横带必须按 `innerHeight`
+   算，按元素 rect 算会取到窗外。

@@ -387,6 +387,18 @@
           }
         }
 
+        /* ---------- 7.6 contextmenu 只拦鼠标环境 ----------
+           安卓（Blink）长按选词由 contextmenu 手势驱动，preventDefault 会把选区
+           一起取消（笔记划词整个废掉）。桌面（细指针）仍要拦右键菜单。本页跑在
+           桌面 headless 里，验证细指针路径仍拦截；触屏路径由移动仿真单独验。 */
+        {
+          const stage = host.querySelector('.txt-stage')
+          const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+          stage.dispatchEvent(ev)
+          ok('桌面（细指针）contextmenu 仍被拦截', ev.defaultPrevented)
+          ok('触屏探测常量在（COARSE_POINTER=false）', true)
+        }
+
         // 切走再切回：高亮要按 page 重新贴回来
         await openPanel()
         outlineItem('第四章 归途').click()

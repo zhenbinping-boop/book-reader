@@ -292,6 +292,50 @@
           await db.delete(); await db.open()
         }
 
+        /* ================= 3.8 EPUB 滚动模式：恢复点下方的 lazy 图不得阻塞恢复 =================
+           epubDom 给所有图挂 loading=lazy，恢复点下方的图在用户滚过去之前不会加载。
+           旧 gate 等整章图片就位 → 被一张「永远不加载」的图按住 → 每次打开停在章首
+           （安卓带图 EPUB 的真实故障）。修后 gate 只等「锚点及以上」的图。 */
+        {
+          const LAZY_URL = '/@fs/D:/book-reader/samples/sample-lazy.epub'
+          const re = await importFile(await asFile('sample-lazy.epub', LAZY_URL, 'application/epub+zip'))
+          savePrefs({ readerFlow: 'scroll' })
+          const mount = () => {
+            const r = createRoot(host)
+            r.render(React.createElement(EpubReader, { bookId: re.id, title: '懒图样例书', onBack: () => {} }))
+            return r
+          }
+          // 第一遍：进第二章（图都在章尾），滚到第 3 段（图片远在两千像素外），退出
+          let root = mount()
+          ok('lazy书：挂起来了', !!(await until(() => vp() && cols()?.children?.length > 3, 14000)))
+          ;[...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '下一节')?.click()
+          await sleep(1200)
+          await until(() => vp() && cols()?.children?.length > 10, 12000)
+          ok('lazy书：已到第二章 (' + headSub() + ')', headSub().includes('第 2/'))
+          scrollSegToTop(2)
+          await sleep(SETTLE)
+          const lazyImgs = [...host.querySelectorAll('.txt-columns img')]
+          ok(`第二章有两张图 (img=${lazyImgs.length})`, lazyImgs.length === 2)
+          const unfinished = lazyImgs.filter((im) => !im.complete).length
+          ok(`恢复点下方的 lazy 图确实未加载 (未加载=${unfinished})`, unfinished >= 1)
+          const before = topSegStart()
+          await sleep(600) // 等写回防抖
+          const prog = await db.progress.get(re.id)
+          ok(`lazy书退出前锚点 start=${before}，落库=${prog?.charOffset}`, !!prog && prog.charOffset > 0)
+          root.unmount(); await sleep(150); host.innerHTML = ''
+
+          // 第二遍：重进 —— 不能 imgsDone（下方 lazy 图永远不加载），直接等恢复落点
+          root = mount()
+          ok('lazy书：重进挂起来了', !!(await until(() => vp() && cols()?.children?.length > 10, 14000)))
+          await sleep(900) // 恢复 + 看门狗 700ms + 余量
+          const got = await until(() => (topSegStart() === before ? before : null), 8000)
+          ok(`★ lazy书重进回到同一段 (实测=${topSegStart()}，退出前=${before})`, got !== null)
+          const prog2 = await db.progress.get(re.id)
+          ok(`lazy书重进后落库锚点未丢 (${prog2?.charOffset})`, !!prog2 && prog2.charOffset > 0)
+          root.unmount(); await sleep(120); host.innerHTML = ''
+          await db.delete(); await db.open()
+        }
+
         /* ================= 4. EPUB 滚动模式：换章后退出 ================= */        {
           const re = await importFile(await asFile('sample.epub', EPUB_URL, 'application/epub+zip'))
           savePrefs({ readerFlow: 'scroll' })

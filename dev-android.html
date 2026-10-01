@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Android CDP check: 长按选词 / contextmenu / 恢复</title>
+    <style>
+      body { margin: 0; }
+      #host { height: 100vh; }
+      .log { font: 12px monospace; padding: 4px 8px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="host"></div>
+    <pre id="out" class="log"></pre>
+    <script type="module">
+      // 专供 tools/android_cdp_check.py 驱动的最小验证页：
+      // 只挂一个 EpubReader（样例书 · 滚动模式），把验证所需的探针挂到 window 上。
+      // 桌面回归页有自己的自动断言流程，这里的页面刻意「安静」，长按手势不被干扰。
+
+      const out = document.getElementById('out')
+      const log = (s) => {
+        out.textContent += s + '\n'
+        console.log('[android-check]', s)
+      }
+      window.__log = log
+      window.__ready = false
+
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+      const until = async (fn, ms) => {
+        const t0 = performance.now()
+        while (performance.now() - t0 < ms) {
+          try {
+            const v = fn()
+            if (v) return v
+          } catch {}
+          await sleep(80)
+        }
+        return null
+      }
+
+      try {
+        const { db } = await import('/src/db.js')
+        const { savePrefs } = await import('/src/lib/prefs.js')
+        const { importFile } = await import('/src/lib/importer.js')
+        const React = (await import('react')).default
+        const { createRoot } = await import('react-dom/client')
+        const EpubReader = (await import('/src/components/EpubReader.jsx')).default
+
+        await db.delete()
+        await db.open()
+        localStorage.removeItem('book-reader:prefs')
+        savePrefs({ readerFlow: 'scroll' })
+
+        const url = '/@fs/D:/book-reader/samples/sample-giant.epub'
+        const buf = await (await fetch(url)).arrayBuffer()
+        const file = new File([buf], 'sample.epub', { type: 'application/epub+zip' })
+        const re = await importFile(file)
+
+        const host = document.getElementById('host')
+        createRoot(host).render(
+          React.createElement(EpubReader, { bookId: re.id, title: '样例电子书', onBack: () => {} })
+        )
+
+        await until(() => host.querySelector('.txt-viewport') && host.querySelectorAll('[data-seg]').length > 3, 15000)
+        await sleep(1200) // 恢复 + 版面稳定
+        window.__ready = true
+        log('READY')
+      } catch (err) {
+        log('BOOT_FAIL: ' + (err?.message || err))
+      }
+    </script>
+  </body>
+</html>

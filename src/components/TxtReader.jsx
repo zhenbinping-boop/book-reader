@@ -36,6 +36,18 @@ import BookmarkButton from './BookmarkButton'
 const GAP = 40
 
 /**
+ * 粗指针（触屏）环境探测，模块级只算一次。
+ *
+ * 安卓（Blink）的「长按选词」正是由 contextmenu 手势驱动的 —— 在 contextmenu 上
+ * preventDefault 会把**选区一起取消**，划词笔记整个废掉（iOS 不受影响：WebKit 的
+ * 长按选择不走 contextmenu，系统气泡由 .txt-stage 的 -webkit-touch-callout 压掉）。
+ * 所以只有鼠标环境才拦右键菜单；触屏上放行的代价是安卓会同时出现原生的复制小菜单，
+ * 与自家的 SelectionPopover 并存 —— 用一点点重叠换回功能可用。
+ */
+const COARSE_POINTER =
+  typeof matchMedia === 'function' && matchMedia('(hover: none), (pointer: coarse)').matches
+
+/**
  * TXT 阅读器。
  *
  * 与 PdfReader 最大的不同：**页是假的**。TXT 没有固定分页，页数完全取决于
@@ -1040,12 +1052,14 @@ export default function TxtReader({ bookId, title, onBack }) {
       data-reader-theme={theme}
       style={readerStyle}
     >
-      {/* 长按选词时压制系统「复制/全选」气泡：contextmenu 一律拦下（选区本身保留，
-          交给自家的 SelectionPopover），否则原生菜单和笔记弹窗同时弹出来打架 */}
+      {/* 长按选词时压制系统「复制/全选」气泡：只拦鼠标环境 —— 安卓的长按选词由
+          contextmenu 手势驱动，preventDefault 会把选区一起取消（见 COARSE_POINTER 的说明） */}
       <div
         className="txt-stage"
         onClick={onStageClick}
-        onContextMenu={(e) => e.preventDefault()}
+        onContextMenu={(e) => {
+          if (!COARSE_POINTER) e.preventDefault()
+        }}
       >
         <div
           className={`txt-viewport${flow === 'scroll' ? ' scroll-flow' : ''}`}

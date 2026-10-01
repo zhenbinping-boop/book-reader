@@ -39,6 +39,18 @@ const GAP = 40
 
 const EMPTY = []
 
+/**
+ * 粗指针（触屏）环境探测，模块级只算一次。
+ *
+ * 安卓（Blink）的「长按选词」正是由 contextmenu 手势驱动的 —— 在 contextmenu 上
+ * preventDefault 会把**选区一起取消**，划词笔记整个废掉（iOS 不受影响：WebKit 的
+ * 长按选择不走 contextmenu，系统气泡由 .txt-stage 的 -webkit-touch-callout 压掉）。
+ * 所以只有鼠标环境才拦右键菜单；触屏上放行的代价是安卓会同时出现原生的复制小菜单，
+ * 与自家的 SelectionPopover 并存 —— 用一点点重叠换回功能可用。
+ */
+const COARSE_POINTER =
+  typeof matchMedia === 'function' && matchMedia('(hover: none), (pointer: coarse)').matches
+
 /** 空章节也要有内容，否则「页数测量」这条链路根本不会跑，翻页控件会卡在上一次的数值上 */
 const EMPTY_SEG = {
   start: 0,
@@ -58,9 +70,16 @@ const EMPTY_SEG = {
  * 位置照这个错版面落下去，结果就是「退出再进来差一页」。
  * 所以有锚点要落的时候，必须等图片都 load / error 过再落。
  */
-function hasPendingImages(cols) {
-  const imgs = cols.querySelectorAll('img')
-  for (const im of imgs) if (!im.complete) return true
+function hasPendingImages(cols, uptoEl) {
+  // 只检查「目标段（含）之前」的图片：锚点落点只由它上方的内容决定，下方的图片晚到
+  // 不会移动它。epubDom 给所有图挂了 loading=lazy，远处的图在用户滚过去之前**永远
+  // 不会加载** —— 全章都等的话，恢复就被一张永远不加载的图无限期按住，人被卡在章首
+  // （安卓上带图 EPUB「每次打开都回到开头」的直接原因；WebKit 懒加载余量大，iOS 不易现形）。
+  for (const el of cols.children) {
+    const imgs = el.querySelectorAll('img')
+    for (const im of imgs) if (!im.complete) return true
+    if (el === uptoEl) break
+  }
   return false
 }
 
@@ -420,10 +439,15 @@ export default function EpubReader({ bookId, title, onBack }) {
         }
         if (userMovedRef.current) return
         const seg = topSegInFlow()
-        const cur = seg?.el ? Number(seg.el.dataset.start) : -1
-        const idx = segmentAt(list, Math.max(0, off || 0))
-        const want = idx >= 0 ? Number(list[idx]?.start ?? off) : off
-        if (cur >= 0 && cur !== want) scrollToOffset(off, list)
+        if (!seg?.el) return
+        // 字符级核对：段级判据在「一章一大块」的书里等于没核对（段首=章首，
+        // 落回章首也判「没偏」）。字符级 + 2.5 行容差 —— scrollSegToChar 与
+        // intraOffsetAtTop 的口径差 ≤ 1 行，容差内绝不重滚，不会抖。
+        const cur = Number(seg.el.dataset.start) + intraOffsetAtTop(seg.el, vp)
+        const want = Math.max(0, off || 0)
+        const size = prefsRef.current.readerSize || 16
+        const tol = Math.max(40, (vp.clientWidth / size) * 2.5)
+        if (Math.abs(cur - want) > tol) scrollToOffset(want, list)
       }, 700)
     },
     [topSegInFlow, scrollToOffset]
@@ -681,29 +705,33 @@ export default function EpubReader({ bookId, title, onBack }) {
 
     // ---- 滚动模式：不量栏，直接把锚点那一段顶到视口顶部 ----
     if (flow === 'scroll') {
-      // 图片还没解码完 → 版面还没定，锚点先按住（与分页模式同一个理由，见 hasPendingImages）
-      if ((pendingAnchorRef.current || jumpRef.current) && hasPendingImages(cols)) return
       // 段数是这个版式下的「位置刻度」，滑杆要用它
       pagesRef.current = segs.length
       setPages(segs.length)
       const first = !restoredRef.current
-      if (first) restoredRef.current = true
       const anchor = pendingAnchorRef.current ?? (first ? jumpRef.current : null)
-      pendingAnchorRef.current = null
-      if (pendingEndRef.current) {
-        pendingEndRef.current = false
-        const vp = vpRef.current
-        if (vp) vp.scrollTop = vp.scrollHeight
-        return
-      }
       if (anchor) {
         const off = resolveAnchor(anchor, segs, bundleRef.current?.ids)
+        // 图片还没解码完 → 版面还没定，锚点先按住。但只等「锚点及以上」的：
+        // 下方的 lazy 图可能永远不加载，全等 = 恢复被无限期按住（见 hasPendingImages）
+        const idx = segmentAt(segs, Math.max(0, off || 0))
+        if (hasPendingImages(cols, colRef.current?.children?.[idx])) return
+        if (first) restoredRef.current = true
+        pendingAnchorRef.current = null
         scrollToOffset(off, segs)
         jumpRef.current = null
         // 恢复完立刻记账，避免「刚打开就退出」把位置丢掉
         anchorRef.current = off
         setFinePct(pctFromAnchor(off))
         armRestoreWatch(off, segs)
+        return
+      }
+      if (first) restoredRef.current = true
+      pendingAnchorRef.current = null
+      if (pendingEndRef.current) {
+        pendingEndRef.current = false
+        const vp = vpRef.current
+        if (vp) vp.scrollTop = vp.scrollHeight
       }
       return
     }
@@ -719,8 +747,19 @@ export default function EpubReader({ bookId, title, onBack }) {
       return
     }
 
-    // 图片还没解码完 → 版面还没定，锚点先按住，等图片 load / error 触发重测再落（见 hasPendingImages）
-    if ((pendingAnchorRef.current || jumpRef.current) && hasPendingImages(cols)) return
+    // 锚点先解析出来：只有「锚点及以上」的图片没就位时才按住（下方的 lazy 图
+    // 可能永远不加载，全等 = 恢复被无限期按住，见 hasPendingImages）。目标段的
+    // 栏位由它上方的内容决定，下方的图只影响总页数、不影响落点。
+    const first = !restoredRef.current
+    const anchor = pendingAnchorRef.current ?? (first ? jumpRef.current : null)
+    if (anchor) {
+      const off0 = resolveAnchor(anchor, segs, bundleRef.current?.ids)
+      const idx0 = segmentAt(segs, Math.max(0, off0 || 0))
+      if (hasPendingImages(cols, colRef.current?.children?.[idx0])) return
+    } else if (pendingEndRef.current && hasPendingImages(cols, null)) {
+      // 跳到章尾要落在最后一栏，页数依赖全书版面，只能等全部图片
+      return
+    }
 
     const counted = Math.max(1, Math.round((cols.scrollWidth + GAP) / (colW + GAP)))
     // 先同步到 ref：scrollToPage 用 pagesRef 钳制，否则首次测量时 pagesRef 还是 1，
@@ -728,9 +767,7 @@ export default function EpubReader({ bookId, title, onBack }) {
     pagesRef.current = counted
     setPages(counted)
 
-    const first = !restoredRef.current
     if (first) restoredRef.current = true
-    const anchor = pendingAnchorRef.current ?? (first ? jumpRef.current : null)
     pendingAnchorRef.current = null
 
     if (pendingEndRef.current) {
@@ -828,9 +865,13 @@ export default function EpubReader({ bookId, title, onBack }) {
     if (!cols || !segs.length) return
     const onImg = (e) => {
       if (e.target?.tagName !== 'IMG') return
-      // 位置还没落定（刚换章 / 刚恢复）时**不要**注入锚点：此刻 anchorRef 可能还是上一轮的
-      // 旧值，注进去会把真正的目标盖掉。没锚点可落时才拿当前位置当锚点。
-      if (restoredRef.current && !pendingAnchorRef.current) {
+      // 顶线**上方**的图片晚到会把读到的内容整体往下推，必须重新落锚补偿；
+      // 顶线**下方**的图片不改变上方版面，按 anchorRef 重落反而会把视口拽回滞后
+      // 120ms+ 的旧锚点 —— 安卓图片解码慢，表现为「读着读着往回跳」。
+      const vp = vpRef.current
+      const atOrBelow =
+        vp && e.target.getBoundingClientRect().bottom > vp.getBoundingClientRect().top + 1
+      if (!atOrBelow && restoredRef.current && !pendingAnchorRef.current) {
         pendingAnchorRef.current = { charOffset: anchorRef.current }
       }
       setMeasureSeq((s) => s + 1)
@@ -1399,12 +1440,14 @@ export default function EpubReader({ bookId, title, onBack }) {
       data-reader-theme={theme}
       style={readerStyle}
     >
-      {/* 长按选词时压制系统「复制/全选」气泡：contextmenu 一律拦下（选区本身保留，
-          交给自家的 SelectionPopover），否则原生菜单和笔记弹窗同时弹出来打架 */}
+      {/* 长按选词时压制系统「复制/全选」气泡：只拦鼠标环境 —— 安卓的长按选词由
+          contextmenu 手势驱动，preventDefault 会把选区一起取消（见 COARSE_POINTER 的说明） */}
       <div
         className="txt-stage"
         onClick={onStageClick}
-        onContextMenu={(e) => e.preventDefault()}
+        onContextMenu={(e) => {
+          if (!COARSE_POINTER) e.preventDefault()
+        }}
       >
         <div
           className={`txt-viewport${flow === 'scroll' ? ' scroll-flow' : ''}`}
