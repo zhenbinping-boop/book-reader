@@ -35,7 +35,15 @@ export default function PdfPage({ pdf, index, scale, pageCache, marks, query, on
       if (cancelled || !canvasRef.current) return
 
       const dpr = Math.min(window.devicePixelRatio || 1, 2)
-      const viewport = page.getViewport({ scale: scale * dpr })
+      // 移动端 GPU 限制 Canvas 最大边长（常见为 4096px），避免超大放大倍率导致 OOM 或白屏
+      const MAX_CANVAS_DIM = 4096
+      let renderScale = scale * dpr
+      const testVp = page.getViewport({ scale: renderScale })
+      if (testVp.width > MAX_CANVAS_DIM || testVp.height > MAX_CANVAS_DIM) {
+        const factor = Math.min(MAX_CANVAS_DIM / testVp.width, MAX_CANVAS_DIM / testVp.height)
+        renderScale *= factor
+      }
+      const viewport = page.getViewport({ scale: renderScale })
       const canvas = canvasRef.current
       canvas.width = Math.max(1, Math.floor(viewport.width))
       canvas.height = Math.max(1, Math.floor(viewport.height))

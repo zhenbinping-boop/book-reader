@@ -30,7 +30,7 @@ export default defineConfig(async () => {
         start_url: '.',
         scope: '.',
         display: 'standalone',
-        orientation: 'portrait',
+        orientation: 'any',
         background_color: '#f7f5f0',
         theme_color: '#f7f5f0',
         icons: [

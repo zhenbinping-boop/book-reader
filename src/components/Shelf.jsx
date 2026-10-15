@@ -23,8 +23,8 @@ function metaText(b, pct) {
  */
 const FORMATS = [
   { key: 'pdf', label: 'PDF', tip: '固定版式', accept: '.pdf,application/pdf' },
-  { key: 'txt', label: 'TXT', tip: '纯文本', accept: '.txt,.text,text/plain' },
-  { key: 'epub', label: 'EPUB', tip: '电子书', accept: '.epub,application/epub+zip' },
+  { key: 'txt', label: 'TXT', tip: '纯文本', accept: '.txt,.text,text/plain,application/octet-stream' },
+  { key: 'epub', label: 'EPUB', tip: '电子书', accept: '.epub,application/epub+zip,application/octet-stream' },
 ]
 
 const ALL_ACCEPT = FORMATS.map((f) => f.accept).join(',')

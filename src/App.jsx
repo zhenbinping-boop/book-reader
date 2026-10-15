@@ -8,6 +8,8 @@ import { listBooks, deleteBook, getBook } from './db'
 import { importFile } from './lib/importer'
 import { backfillHashes } from './lib/backup'
 import { useHashRoute, goShelf } from './hooks/useHashRoute'
+import useBackClose from './hooks/useBackClose'
+import { applyThemeColor } from './lib/prefs'
 
 export default function App() {
   const route = useHashRoute()
@@ -16,6 +18,14 @@ export default function App() {
   const [book, setBook] = useState(undefined)
   const [backupOpen, setBackupOpen] = useState(false)
   const [notice, setNotice] = useState('')
+
+  useBackClose(backupOpen, () => setBackupOpen(false), 'backup')
+
+  useEffect(() => {
+    if (route.name === 'shelf') {
+      applyThemeColor('shelf')
+    }
+  }, [route.name])
 
   const refresh = useCallback(() => {
     listBooks().then(setBooks)

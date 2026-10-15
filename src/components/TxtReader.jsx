@@ -11,7 +11,7 @@ import {
   addBookmark,
   deleteBookmark,
 } from '../db'
-import { loadPrefs, savePrefs, resolveTheme, DEFAULT_PREFS, snapReaderSize } from '../lib/prefs'
+import { loadPrefs, savePrefs, resolveTheme, DEFAULT_PREFS, snapReaderSize, applyThemeColor } from '../lib/prefs'
 import {
   decodeBytes,
   splitChapters,
@@ -26,6 +26,7 @@ import useHistoryStack from '../hooks/useHistoryStack'
 import useWakeLock from '../hooks/useWakeLock'
 import useImmersive from '../hooks/useImmersive'
 import usePinch, { applyPinchFx } from '../hooks/usePinch'
+import useBackClose from '../hooks/useBackClose'
 import SidePanel from './SidePanel'
 import SelectionPopover from './SelectionPopover'
 import AppearancePanel from './AppearancePanel'
@@ -89,6 +90,18 @@ export default function TxtReader({ bookId, title, onBack }) {
     setOn: setImmersive,
   } = useImmersive()
   const keepAwake = useWakeLock(prefs.readerKeepAwake)
+
+  useBackClose(drawer, () => setDrawer(false), 'drawer')
+  useBackClose(appearance, () => setAppearance(false), 'appearance')
+  useBackClose(menu, () => setMenu(false), 'menu')
+  useBackClose(!!popover, () => {
+    popoverRef.current = null
+    setPopover(null)
+  }, 'popover')
+
+  useEffect(() => {
+    applyThemeColor(theme)
+  }, [theme])
 
   const vpRef = useRef(null)
   const colRef = useRef(null)
@@ -1101,6 +1114,9 @@ export default function TxtReader({ bookId, title, onBack }) {
             if (shouldIgnoreSwipe()) return
             // 滚动模式下上下滑就是浏览本身，横向轻滑不该被当成「滚一屏」翻页
             if (flowRef.current === 'scroll') return
+            // 用户在长按选词或拖拽调整选区时，位移易超阈值，不能误判成翻页
+            const sel = window.getSelection()
+            if (sel && !sel.isCollapsed && sel.toString().trim()) return
             const t = e.changedTouches[0]
             const dx = t.clientX - start.x
             const dy = t.clientY - start.y

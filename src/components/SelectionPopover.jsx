@@ -5,10 +5,22 @@ export default function SelectionPopover({ data, onPick, onDelete, onCopy, onClo
   const vw = window.innerWidth
   const vh = window.innerHeight
 
+  const isCoarse =
+    typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
+
   const left = Math.min(Math.max(8, rect.left + rect.width / 2 - W / 2), Math.max(8, vw - W - 8))
-  // 选区上方放不下就落到下方，避免被工具栏遮住
-  const above = rect.top - H - 10
-  const top = above > 8 ? above : Math.min(rect.bottom + 10, vh - H - 8)
+
+  // 安卓触屏（coarse pointer）长按选词时，系统原生浮动菜单（复制/分享）通常出现在选区正上方。
+  // 触屏下优先放在选区下方（rect.bottom + 12），避免与系统菜单重叠；下方放不下时再落回上方。
+  // 鼠标桌面端则保持优先在上方。
+  let top
+  if (isCoarse) {
+    const below = rect.bottom + 12
+    top = below + H <= vh - 8 ? below : Math.max(8, rect.top - H - 12)
+  } else {
+    const above = rect.top - H - 10
+    top = above > 8 ? above : Math.min(rect.bottom + 10, vh - H - 8)
+  }
 
   return (
     <>

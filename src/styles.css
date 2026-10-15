@@ -216,6 +216,7 @@ body {
   font-size: var(--fs-lg);
   line-height: 1.6;
   overscroll-behavior: none;
+  touch-action: manipulation;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -559,6 +560,7 @@ button {
   flex: 1;
   overflow: auto;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   display: flex;
   justify-content: center;
   padding: var(--sp-3) 0;
@@ -1221,7 +1223,7 @@ button {
   background: var(--ui-surface-2);
   color: var(--ui-text);
   font: inherit;
-  font-size: var(--fs-base);
+  font-size: 16px; /* 移动端字号不小于16px，避免聚焦时触发浏览器视口自动放大 */
 }
 
 .search-input:focus-visible {

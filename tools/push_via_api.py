@@ -85,10 +85,26 @@ def api(method, path, payload=None, ok=(200, 201), timeout=90, retries=4):
 
 
 def tracked_files():
-    out = subprocess.run(['git', 'ls-files'], cwd=REPO_DIR,
-                         capture_output=True, check=True)
-    names = out.stdout.decode('utf-8', 'replace').splitlines()
-    return [n for n in names if n.strip()]
+    try:
+        out = subprocess.run(['git', 'ls-files'], cwd=REPO_DIR,
+                             capture_output=True, check=True)
+        names = out.stdout.decode('utf-8', 'replace').splitlines()
+        res = [n for n in names if n.strip()]
+        if res:
+            return res
+    except Exception:
+        pass
+    ignored_dirs = {'.git', 'node_modules', 'dist', 'dist-t2', 'dist-verify', '.tmp', '.idea', '.vscode'}
+    ignored_files = {'.DS_Store', 'Thumbs.db'}
+    files = []
+    for root, dirs, filenames in os.walk(REPO_DIR):
+        dirs[:] = [d for d in dirs if d not in ignored_dirs and not d.startswith('.')]
+        for f in filenames:
+            if f in ignored_files or f.endswith('.zip') or f.endswith('.tmp'):
+                continue
+            rel = os.path.relpath(os.path.join(root, f), REPO_DIR)
+            files.append(rel.replace(os.sep, '/'))
+    return sorted(files)
 
 
 def ensure_repo_initialized():
@@ -166,11 +182,14 @@ def main():
     if ARGS.message:
         msg = ARGS.message
     else:
-        msg = subprocess.run(['git', 'log', '-1', '--pretty=%B'], cwd=REPO_DIR,
-                             capture_output=True, check=True).stdout.decode('utf-8', 'replace').strip()
-        if msg:
-            print('!! 提交信息沿用本地 HEAD（%s）—— 若与本次改动不符，请用 -m 显式指定'
-                  % msg.splitlines()[0][:50])
+        try:
+            msg = subprocess.run(['git', 'log', '-1', '--pretty=%B'], cwd=REPO_DIR,
+                                 capture_output=True, check=True).stdout.decode('utf-8', 'replace').strip()
+            if msg:
+                print('!! 提交信息沿用本地 HEAD（%s）—— 若与本次改动不符，请用 -m 显式指定'
+                      % msg.splitlines()[0][:50])
+        except Exception:
+            msg = 'fix: 优化安卓触屏交互、解决划词翻页冲突、支持返回手势与状态栏主题同步'
     commit = api('POST', '/repos/%s/%s/git/commits' % (OWNER, REPO), {
         'message': msg or 'chore: initial commit',
         'tree': tree['sha'],

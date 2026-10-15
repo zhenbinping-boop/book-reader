@@ -140,3 +140,18 @@ export function nextTheme(current) {
   const i = READER_THEMES.indexOf(current)
   return READER_THEMES[(i + 1) % READER_THEMES.length]
 }
+
+export const THEME_BG_COLORS = {
+  paper: '#fdfbf7',
+  sepia: '#f4ecd8',
+  night: '#14161a',
+  oled: '#000000',
+}
+
+/** 动态更新移动端（Android/PWA）系统状态栏与导航栏的 theme-color */
+export function applyThemeColor(theme) {
+  if (typeof document === 'undefined') return
+  const color = THEME_BG_COLORS[theme] || (theme === 'night' || theme === 'oled' ? '#131519' : '#f7f5f0')
+  const metas = document.querySelectorAll('meta[name="theme-color"]')
+  metas.forEach((m) => m.setAttribute('content', color))
+}
