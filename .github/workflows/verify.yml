@@ -1,0 +1,83 @@
+name: Verify reader
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - name: Unit tests
+        run: npm run test:unit
+      - name: Browser acceptance (isolated profile)
+        run: npm run test:acceptance
+      - name: Production build
+        run: npm run build
+
+  android:
+    needs: verify
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - run: npm ci
+      - name: Prepare bundled offline app
+        run: npm run android:sync
+      - name: Restore persistent alpha signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64" || { echo 'Missing ANDROID_DEBUG_KEYSTORE_BASE64 signing secret'; exit 1; }
+          mkdir -p "$HOME/.android"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$HOME/.android/debug.keystore"
+          chmod 600 "$HOME/.android/debug.keystore"
+      - name: Build installable alpha APK
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug lintDebug
+      - name: Verify APK signature and bundled resources
+        run: |
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose android/app/build/outputs/apk/debug/app-debug.apk
+          python tools/check_android_apk.py android/app/build/outputs/apk/debug/app-debug.apk
+          mkdir -p apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk apk/book-reader-v0.2.0-alpha.1.apk
+          cd apk
+          sha256sum *.apk > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: book-reader-android-alpha
+          path: apk/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: android-build-reports
+          path: android/app/build/reports/
+          if-no-files-found: ignore
