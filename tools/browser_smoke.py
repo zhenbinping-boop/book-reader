@@ -10,6 +10,7 @@ import http.server
 import os
 from pathlib import Path
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -76,7 +77,7 @@ def is_failure(line):
 
 def run_page(chrome, target, timeout):
     lines.clear()
-    with tempfile.TemporaryDirectory(prefix='book-reader-smoke-') as profile:
+    with tempfile.TemporaryDirectory(prefix='book-reader-smoke-', ignore_cleanup_errors=True) as profile:
         args = [chrome, '--headless=new', '--disable-gpu', '--no-first-run',
                 '--no-default-browser-check', '--disable-dev-shm-usage', '--incognito',
                 '--window-size=1280,900', f'--user-data-dir={profile}']
@@ -84,7 +85,8 @@ def run_page(chrome, target, timeout):
             args.append('--no-sandbox')
         args.extend(shlex.split(os.environ.get('CHROME_ARGS', '')))
         with tempfile.TemporaryFile(mode='w+') as stderr:
-            proc = subprocess.Popen(args + [target], stdout=subprocess.DEVNULL, stderr=stderr)
+            proc = subprocess.Popen(args + [target], stdout=subprocess.DEVNULL, stderr=stderr,
+                                    start_new_session=os.name != 'nt')
             deadline = time.monotonic() + timeout
             try:
                 while time.monotonic() < deadline and proc.poll() is None:
@@ -92,12 +94,25 @@ def run_page(chrome, target, timeout):
                         break
                     time.sleep(0.1)
             finally:
-                proc.terminate()
+                # Chrome's launcher may exit before renderer/cache children do.
+                # Stop the isolated process group before deleting its profile.
+                if os.name != 'nt':
+                    try:
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    proc.terminate()
                 try:
                     proc.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait()
+                if os.name != 'nt':
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
             done = any('ALL DONE' in line for line in lines)
             failures = [line for line in lines if is_failure(line)]
             ok = done and not failures
