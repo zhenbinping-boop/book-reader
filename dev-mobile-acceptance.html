@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>移动阅读验收：续读、手势、笔记</title>
+<style>
+body { margin:0; font:12px monospace; }
+#host { width:340px;height:560px;position:relative;overflow:hidden; }
+#log { position:fixed;left:500px;right:0;top:0;bottom:0;overflow:auto;white-space:pre-wrap;z-index:100;background:white;color:black; }
+</style></head><body><div id="host"></div><pre id="log"></pre>
+<script type="module">
+import '/src/styles.css'
+// 浏览器验收合成触摸：用于验证应用逻辑，不伪称真实 Android 系统选词验收。
+Object.defineProperty(navigator, 'maxTouchPoints', { configurable:true, value:5 })
+const nativeMatchMedia = window.matchMedia.bind(window)
+window.matchMedia = (query) => {
+  const media = nativeMatchMedia(query)
+  if (query.includes('pointer: coarse') || query.includes('hover: none')) Object.defineProperty(media, 'matches', {value:true})
+  return media
+}
+const log = (line) => {
+  document.querySelector('#log').textContent += line + '\n'
+  fetch('http://127.0.0.1:5178/log', {method:'POST',body:line}).catch(()=>{})
+}
+let failed=0
+const ok=(label,condition)=>{if(!condition)failed++;log(`${condition?'ok  ':'BAD '}${label}`)}
+const sleep=(ms)=>new Promise(r=>setTimeout(r,ms))
+const until=async(fn,ms=9000)=>{
+  const end=performance.now()+ms
+  while(performance.now()<end){const result=await fn();if(result)return result;await sleep(30)}
+  throw new Error('等待条件超时: '+fn.toString().slice(0,180))
+}
+const host=document.querySelector('#host')
+let root
+window.addEventListener('error',e=>log('WINDOW ERROR: '+e.message))
+window.addEventListener('unhandledrejection',e=>log('REJECTION: '+(e.reason?.stack||e.reason)))
+try {
+  const React=(await import('react')).default
+  const {createRoot}=await import('react-dom/client')
+  const {db}=await import('/src/db.js')
+  const {importFile}=await import('/src/lib/importer.js')
+  const {savePrefs}=await import('/src/lib/prefs.js')
+  const TxtReader=(await import('/src/components/TxtReader.jsx')).default
+  const EpubReader=(await import('/src/components/EpubReader.jsx')).default
+  const PdfReader=(await import('/src/components/PdfReader.jsx')).default
+  const clear=async()=>{
+    if(root){root.unmount();root=null;await sleep(80)}
+    host.innerHTML=''
+    window.getSelection().removeAllRanges()
+    await db.delete();await db.open()
+    localStorage.removeItem('book-reader:prefs')
+  }
+  const sample=async(name,type)=>new File([await(await fetch('/samples/'+name)).arrayBuffer()],name,{type})
+  const mount=async(Reader,id,selector)=>{
+    root=createRoot(host)
+    root.render(React.createElement(Reader,{bookId:id,title:'移动验收',onBack:()=>{}}))
+    await until(()=>host.querySelector(selector))
+    await sleep(180)
+  }
+  const vp=()=>host.querySelector('.txt-viewport')
+  const rangeAt=(el,from,to)=>{
+    const nodes=[];const walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT)
+    for(let n=walker.nextNode();n;n=walker.nextNode())nodes.push(n)
+    const point=(offset)=>{
+      for(const n of nodes){if(offset<n.length)return[n,offset];offset-=n.length}
+      const n=nodes.at(-1);return[n,n.length]
+    }
+    const r=document.createRange();r.setStart(...point(from));r.setEnd(...point(to));return r
+  }
+  const selected=async(el,from,to)=>{
+    const selection=window.getSelection();selection.removeAllRanges();selection.addRange(rangeAt(el,from,to))
+    document.dispatchEvent(new Event('selectionchange'))
+    el.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerType:'touch'}))
+    await until(()=>host.querySelector('.popover'))
+  }
+  const fire=(el,type,points,remaining)=>{
+    const changed=points.map(([x,y,id=1])=>({identifier:id,clientX:x,clientY:y,target:el}))
+    const touches=remaining===undefined?(type==='touchend'||type==='touchcancel'?[]:changed):remaining
+    const e=new Event(type,{bubbles:true,cancelable:true})
+    Object.defineProperties(e,{touches:{value:touches},changedTouches:{value:changed}})
+    el.dispatchEvent(e);return e
+  }
+  const swipe=async(el,kind='left')=>{
+    fire(el,'touchstart',[[260,230]])
+    if(kind==='long')await sleep(400)
+    if(kind==='vertical')fire(el,'touchmove',[[260,110]])
+    if(kind==='cancel')fire(el,'touchcancel',[[240,230]])
+    if(kind==='pinch')fire(el,'touchmove',[[240,230],[300,230,2]])
+    fire(el,'touchend',[[70,230]])
+    await sleep(450)
+  }
+  const current=()=>host.querySelector('.scrub-num')?.textContent
+  const chapter=()=>host.querySelector('.scrub-chap')?.textContent
+  const text='这是一段没有换行的长文本，用来验证在同一个段落中间阅读也能保存并恢复准确的位置。'.repeat(180)
+  const txt=()=>new File(['第一章 长段验收\n'+text+'\n第二章 结束\n最后一章。'],'mobile-long.txt',{type:'text/plain'})
+
+  // A. 长段落滚动：正常退出 / 立即退出 / 进入后台 / 重排。
+  for(const [name,Reader,file] of [
+    ['TXT',TxtReader,txt],
+    ['EPUB',EpubReader,()=>sample('sample-giant.epub','application/epub+zip')],
+  ]){
+    await clear();savePrefs({readerFlow:'scroll'})
+    const {id}=await importFile(await file())
+    await mount(Reader,id,'.txt-p')
+    vp().scrollTop=650;vp().dispatchEvent(new Event('scroll',{bubbles:true}))
+    await sleep(850)
+    const first=await db.progress.get(id)
+    ok(name+' 长段中部保存非段首字符位置',first?.charOffset>150)
+    vp().scrollTop=1100;vp().dispatchEvent(new Event('scroll',{bubbles:true}))
+    const wanted=vp().scrollTop
+    // 不等 600ms 防抖，模拟立即返回。
+    root.unmount();root=null
+    await until(async()=>((await db.progress.get(id))?.charOffset||0)>(first?.charOffset||0))
+    host.innerHTML=''
+    await mount(Reader,id,'.txt-p')
+    await sleep(800)
+    ok(name+' 立即退出后重进回到长段中部',Math.abs(vp().scrollTop-wanted)<65)
+    const saved=await db.progress.get(id)
+    host.style.width='300px'
+    await sleep(400)
+    const segs=[...host.querySelectorAll('.txt-p')]
+    const target=segs.filter(el=>Number(el.dataset.start)<=saved.charOffset).at(-1)
+    const base=Number(target.dataset.start)
+    const rect=rangeAt(target,saved.charOffset-base,saved.charOffset-base+1).getBoundingClientRect()
+    ok(name+' 换宽度后同一字符仍在视口顶部附近',Math.abs(rect.top-vp().getBoundingClientRect().top)<65)
+    vp().scrollTop+=300;vp().dispatchEvent(new Event('scroll',{bubbles:true}))
+    window.dispatchEvent(new Event('pagehide'))
+    await until(async()=>((await db.progress.get(id))?.charOffset||0)>saved.charOffset)
+    ok(name+' pagehide 及时补写当前进度',true)
+    const beforePause=(await db.progress.get(id)).charOffset
+    vp().scrollTop+=250;vp().dispatchEvent(new Event('scroll',{bubbles:true}))
+    window.dispatchEvent(new Event('reader:pause'))
+    await until(async()=>((await db.progress.get(id))?.charOffset||0)>beforePause)
+    ok(name+' 原生切后台及时补写当前进度',true)
+    host.style.width='340px'
+  }
+
+  // A2. 长段落跨多页时，退出不能退回该段开始的第一页。
+  for(const [name,Reader,file] of [['TXT',TxtReader,txt],['EPUB',EpubReader,()=>sample('sample-giant.epub','application/epub+zip')]]){
+    await clear();savePrefs({readerFlow:'page'})
+    const {id}=await importFile(await file());await mount(Reader,id,'.txt-p')
+    for(let i=0;i<3;i++){
+      host.querySelector('.reader-bottom button[aria-label="下一页"]').click();await sleep(450)
+    }
+    const wanted=current()
+    ok(name+' 长段落可以翻到第 4 页',/^4\s*\//.test(wanted))
+    root.unmount();root=null;await sleep(100);host.innerHTML=''
+    await mount(Reader,id,'.txt-p');await sleep(400)
+    ok(name+' 长段落跨栏续读不退回段首',current()===wanted)
+  }
+
+  // A3. PDF 同一页内滚动、重进和改变宽度后恢复页内比例。
+  {
+    await clear()
+    const {id}=await importFile(await sample('sample.pdf','application/pdf'))
+    await mount(PdfReader,id,'.page-slot canvas')
+    const view=host.querySelector('.reader-view')
+    const slot=()=>host.querySelector('.page-slot[data-page="1"]')
+    const top=slot().getBoundingClientRect().top-view.getBoundingClientRect().top+view.scrollTop
+    view.scrollTop=top+slot().getBoundingClientRect().height*.4
+    view.dispatchEvent(new Event('scroll',{bubbles:true}));await sleep(800)
+    const first=await db.progress.get(id)
+    ok('PDF 保存页内比例，而不只保存页码',first.scrollPage===2 && first.pageOffset>.3 && first.pageOffset<.5)
+    view.scrollTop+=20;view.dispatchEvent(new Event('scroll',{bubbles:true}))
+    const wanted=view.scrollTop
+    root.unmount();root=null;await sleep(100);host.innerHTML=''
+    await mount(PdfReader,id,'.page-slot canvas');await sleep(300)
+    ok('PDF 同页立即退出后重进恢复原来的滚动位置',Math.abs(host.querySelector('.reader-view').scrollTop-wanted)<4)
+    const saved=await db.progress.get(id)
+    host.style.width='300px';await sleep(400)
+    const changedView=host.querySelector('.reader-view')
+    const fraction=(changedView.getBoundingClientRect().top-slot().getBoundingClientRect().top)/slot().getBoundingClientRect().height
+    ok('PDF 旋屏改宽度后保留页内比例',Math.abs(fraction-saved.pageOffset)<.03)
+    host.style.width='340px'
+  }
+
+  // B. 三格式都接入同一套手势；正常横滑有效，长按/拖选/取消/双指不误翻。
+  for(const [name,Reader,file,selector] of [
+    ['TXT',TxtReader,txt,'.txt-p'],
+    ['EPUB',EpubReader,()=>sample('sample-giant.epub','application/epub+zip'),'.txt-p'],
+    ['PDF',PdfReader,()=>sample('sample.pdf','application/pdf'),'.textLayer span[data-idx]'],
+  ]){
+    await clear();savePrefs({readerFlow:'page'})
+    const {id}=await importFile(await file())
+    if(name==='PDF')await db.progress.update(id,{mode:'page'})
+    await mount(Reader,id,selector)
+    const view=name==='PDF'?host.querySelector('.reader-view'):vp()
+    const start=current();await swipe(view)
+    ok(name+' 快速横滑翻到下一页',current()!==start)
+    for(const kind of ['vertical','long','cancel','pinch']){
+      const before=current();await swipe(view,kind)
+      ok(name+' '+kind+' 不误翻页',current()===before)
+    }
+    // 回到当前页可见的文本范围，PDF 选当前页文本层。
+    const candidates=[...host.querySelectorAll(selector)]
+    const chosen=candidates.find(el=>el.textContent.length>12 && el.getBoundingClientRect().right>0 && el.getBoundingClientRect().left<340) || candidates.find(el=>el.textContent.length>12)
+    await selected(chosen,0,5)
+    ok(name+' 触屏使用底部笔记工具栏',host.querySelector('.popover')?.dataset.placement==='bottom')
+    ok(name+' 无全屏遮罩挡住选区手柄',!host.querySelector('.popover-mask'))
+    const ev=new MouseEvent('contextmenu',{bubbles:true,cancelable:true});chosen.dispatchEvent(ev)
+    ok(name+' 原生 contextmenu 不被阻止',!ev.defaultPrevented)
+    const before=current();await swipe(view)
+    ok(name+' 选词期间不翻页',current()===before)
+    // 调整手柄后的最终选区必须更新到保存内容，不能用旧的 5 字快照。
+    await selected(chosen,0,10)
+    const raw=chosen.textContent.slice(0,10)
+    const wanted=name==='PDF'?raw.replace(/\s+/g,' ').trim():raw
+    host.querySelector('.popover .sw[data-color=green]').click()
+    const rows=await until(async()=>{const rows=await db.highlights.where('bookId').equals(id).toArray();return rows.length?rows:null})
+    ok(name+' 保存拖选后的最新文本',rows[0].text===wanted)
+    await until(()=>window.getSelection().isCollapsed)
+    ok(name+' 笔记创建后清理原生选区',true)
+    await sleep(400)
+    const next=[...host.querySelectorAll(selector)].find(el=>el.textContent.length>12)
+    await selected(next,1,6)
+    window.getSelection().removeAllRanges();document.dispatchEvent(new Event('selectionchange'))
+    await until(()=>!host.querySelector('.popover'))
+    ok(name+' 系统选区消失后关闭失效笔记工具栏',true)
+  }
+
+  // C. 滚动到底的一次长滑不能触发自动换章，按钮仍能显式换章。
+  for(const [name,Reader,file] of [['TXT',TxtReader,txt],['EPUB',EpubReader,()=>sample('sample-giant.epub','application/epub+zip')]]){
+    await clear();savePrefs({readerFlow:'scroll'})
+    const {id}=await importFile(await file());await mount(Reader,id,'.txt-p')
+    const before=chapter(),view=vp()
+    fire(view,'touchstart',[[160,400]])
+    view.scrollTop=view.scrollHeight;view.dispatchEvent(new Event('scroll',{bubbles:true}))
+    fire(view,'touchmove',[[160,60]]);fire(view,'touchend',[[160,60]])
+    await sleep(300)
+    ok(name+' 同一次滚动到章末不会误跨章',chapter()===before)
+    const next=[...host.querySelectorAll('.reader-top button')].find(el=>/下一[章节]/.test(el.textContent))
+    next.click();await until(()=>chapter()!==before)
+    ok(name+' 显式下一章按钮仍然有效',true)
+  }
+  await clear()
+  log(failed?`RESULT: FAIL (${failed})`:'RESULT: PASS')
+}catch(error){log('THROWN: '+(error.stack||error))}
+finally{if(root)root.unmount()}
+log('ALL DONE')
+</script></body></html>

@@ -73,7 +73,7 @@ export default function usePinch({
   const gestureRef = useRef(null)
   // 手势结束时刻。阅读器判「滑动翻页」时必须跳过这一次 ——
   // 双指缩小后 `changedTouches[0]` 的位移完全可能超过 50px，会被误判成翻页
-  const endAtRef = useRef(0)
+  const endAtRef = useRef(-Infinity)
   // 触控板捏合（ctrl + wheel）的累积状态
   const wheelRef = useRef(null)
 

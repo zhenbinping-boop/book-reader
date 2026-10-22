@@ -68,8 +68,8 @@
         log('db cleared')
 
         const bytesOf = async (p) => new Uint8Array(await (await fetch(p)).arrayBuffer())
-        const epubBytes = await bytesOf('/@fs/D:/book-reader/samples/sample.epub')
-        const ncxBytes = await bytesOf('/@fs/D:/book-reader/samples/sample-ncx.epub')
+        const epubBytes = await bytesOf('/samples/sample.epub')
+        const ncxBytes = await bytesOf('/samples/sample-ncx.epub')
         log(`sample.epub ${epubBytes.length}B / sample-ncx.epub ${ncxBytes.length}B`)
 
         /* ---------- 1. ZIP ---------- */

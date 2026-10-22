@@ -1,4 +1,3 @@
-import { openPdf, renderCover } from '../pdf/pdfService'
 import { putBook, findBookByHash, attachBlob } from '../db'
 import { fileFingerprint } from './backup'
 import { decodeBytes, splitChapters } from './txtText'
@@ -53,6 +52,7 @@ export async function importPdf(file, onStep) {
   }
 
   onStep?.('parse')
+  const { openPdf, renderCover } = await import('../pdf/pdfService')
   const { doc, destroy } = await openPdf(file)
 
   try {

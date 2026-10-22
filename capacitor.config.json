@@ -1,0 +1,13 @@
+{
+  "appId": "io.github.zhenbinpingboop.bookreader",
+  "appName": "阅读器",
+  "webDir": "dist-android",
+  "server": {
+    "androidScheme": "https",
+    "errorPath": "webview-error.html"
+  },
+  "android": {
+    "allowMixedContent": false,
+    "minWebViewVersion": 140
+  }
+}

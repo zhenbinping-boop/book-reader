@@ -2,7 +2,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   db,
   getBlob,
-  saveProgress,
   listHighlights,
   addHighlight,
   updateHighlight,
@@ -15,7 +14,8 @@ import { loadPrefs, savePrefs, resolveTheme, DEFAULT_PREFS, snapReaderSize, appl
 import { searchChapters, segmentAt, chapterPercent } from '../lib/txtText'
 import {
   firstSegOnPage,
-  pageOfSegment,
+  pageOfCharacter,
+  intraOffsetAtColumn,
   selectionOffsets,
   intraOffsetAtTop,
   scrollSegToChar,
@@ -29,6 +29,8 @@ import useWakeLock from '../hooks/useWakeLock'
 import useImmersive from '../hooks/useImmersive'
 import usePinch from '../hooks/usePinch'
 import useBackClose from '../hooks/useBackClose'
+import useReaderGesture from '../hooks/useReaderGesture'
+import useProgressCheckpoint from '../hooks/useProgressCheckpoint'
 import SidePanel from './SidePanel'
 import SelectionPopover from './SelectionPopover'
 import AppearancePanel from './AppearancePanel'
@@ -133,10 +135,7 @@ export default function EpubReader({ bookId, title, onBack }) {
   useBackClose(drawer, () => setDrawer(false), 'drawer')
   useBackClose(appearance, () => setAppearance(false), 'appearance')
   useBackClose(menu, () => setMenu(false), 'menu')
-  useBackClose(!!popover, () => {
-    popoverRef.current = null
-    setPopover(null)
-  }, 'popover')
+  useBackClose(!!popover, () => dismissPopover(), 'popover')
 
   useEffect(() => {
     applyThemeColor(theme)
@@ -152,14 +151,12 @@ export default function EpubReader({ bookId, title, onBack }) {
   const pagesRef = useRef(1)
   const highlightsRef = useRef([])
   const rafRef = useRef(0)
-  const saveTimer = useRef(0)
   // 有没有「位置变了但还没写回」——写回时再读 anchorRef，见下面「进度写回」的说明
-  const dirtyRef = useRef(false)
   // flushNow 要在多处被调用（滚动停稳、卸载兜底），用 ref 转一手，免得互相成为依赖
-  const flushRef = useRef(() => {})
   const pendingAnchorRef = useRef(null)
   const pendingEndRef = useRef(false)
   const anchorRef = useRef(0)
+  const checkpointRef = useRef(null)
   const jumpRef = useRef(null)
   const restoredRef = useRef(false)
   // 恢复看门狗：滚动模式的「恢复」若赶上版面没定（图片晚到等），落点会偏。
@@ -168,11 +165,11 @@ export default function EpubReader({ bookId, title, onBack }) {
   const restoreAbortRef = useRef(null)
   const userMovedRef = useRef(false)
   const popoverRef = useRef(null)
+  const gestureRef = useRef(null)
   // 弹窗刚被「点空白关掉」的时间戳：pointerup 的定时器会立刻再跑一次
   // openForSelection，若此刻原生选区还在就会把弹窗又弹出来 —— 用户点掉弹窗、
   // 点屏幕唤工具栏，结果弹窗阴魂不散（踩过）。350ms 内不再重开。
   const dismissAtRef = useRef(0)
-  const touchRef = useRef(null)
   // segs 的镜像：给不随 segs 重建的回调（如 syncAnchorFromScroll）读当前段列表用
   const segsRef = useRef([])
   const prefsRef = useRef(loadPrefs())
@@ -475,7 +472,7 @@ export default function EpubReader({ bookId, title, onBack }) {
       // 书签与后退栈的判据是「目标单位 == 当前单位」，把单位从「栏」换成「段」即可，
       // 判据本身不用动 —— 与分页模式是同一条（见 MEMORY 的「锚点落在当前显示的栏里」）。
       if (flowRef.current === 'scroll') return idx
-      const p = pageOfSegment(colRef.current, idx, geo())
+      const p = pageOfCharacter(colRef.current, idx, Math.max(0, charOffset - list[idx].start), geo())
       return p < 0 ? 0 : p
     },
     [geo]
@@ -527,6 +524,7 @@ export default function EpubReader({ bookId, title, onBack }) {
     // 换章后位置正在变化，恢复看门狗作废
     clearTimeout(restoreWatchRef.current)
     restoreAbortRef.current?.abort()
+    chapterRef.current = t
     pendingEndRef.current = atEnd
     restoredRef.current = true
     const vp = vpRef.current
@@ -814,9 +812,11 @@ export default function EpubReader({ bookId, title, onBack }) {
    * scrollToPage 设好了），effect 不会重跑 —— 于是锚点永远停在 0，表现为「退出再进来总是
    * 回到这一节开头」。所以滚动停稳后还要再同步一次，见下面 scrollend 那一段。
    */
-  const syncAnchorFromScroll = useCallback(() => {
+  const syncAnchorFromScroll = useCallback((schedule = true) => {
     const vp = vpRef.current
-    if (!vp) return
+    const cols = colRef.current
+    if (!vp?.isConnected || !restoredRef.current || pendingAnchorRef.current || jumpRef.current) return
+    if (Number(cols?.dataset.chapter) !== chapterRef.current || bundleRef.current?.chapter !== chapterRef.current) return
     // 滚动模式的位置真相在竖向几何里，不经过「栏」
     let seg = null
     let inScroll = false
@@ -834,17 +834,13 @@ export default function EpubReader({ bookId, title, onBack }) {
     if (!Number.isFinite(abs)) return
     // 滚动模式细化到字符：顶线压在段内第几个字符上（「一章一大块」的书
     // 只记段首等于整章丢进度）。分页模式的位置单位是「栏」，段首粒度已够。
-    const intra = inScroll ? intraOffsetAtTop(seg.el, vp) : 0
+    const intra = inScroll ? intraOffsetAtTop(seg.el, vp) : intraOffsetAtColumn(seg.el, vp)
     const next = Math.max(0, abs + intra)
     if (next === anchorRef.current) return
     anchorRef.current = next
     setFinePct(pctFromAnchor(next))
     // 位置真的动了 → 重新排一次写回（不然只有 page 变化才会写）
-    if (restoredRef.current) {
-      dirtyRef.current = true
-      clearTimeout(saveTimer.current)
-      saveTimer.current = setTimeout(() => flushRef.current(), 600)
-    }
+    if (schedule) checkpointRef.current?.schedule()
   }, [geo, topSegInFlow, pctFromAnchor])
 
   useEffect(() => {
@@ -899,6 +895,7 @@ export default function EpubReader({ bookId, title, onBack }) {
   }, [segs])
 
   const onScroll = useCallback(() => {
+    syncAnchorFromScroll()
     if (rafRef.current) return
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = 0
@@ -915,59 +912,29 @@ export default function EpubReader({ bookId, title, onBack }) {
       const p = Math.round(vp.scrollLeft / (w + GAP))
       setPage((prev) => (prev === p ? prev : p))
     })
-  }, [topSegInFlow])
+  }, [topSegInFlow, syncAnchorFromScroll])
 
   /* ---------------- 进度写回 ---------------- */
 
-  /**
-   * 真正落库。**值在这里现读**（chapterRef / anchorRef），不在「排写回」的那一刻抓取：
-   * 位置是异步落定的（smooth 滚动停稳、图片解码后重排都会改锚点），排写回时先抓一份
-   * 就会把还没落定的旧位置存进去 —— 这正是「EPUB 永远记不住章内位置」的成因。
-   */
-  const flushNow = useCallback(() => {
-    clearTimeout(saveTimer.current)
-    saveTimer.current = 0
-    if (!dirtyRef.current) return
-    dirtyRef.current = false
-    saveProgress(bookId, {
-      chapterIndex: chapterRef.current,
-      charOffset: anchorRef.current,
-      // 书架按 page / pageCount 算百分比，这里让 page 表示「第几节」
-      page: chapterRef.current + 1,
-      mode: 'page',
-    })
-  }, [bookId])
-  flushRef.current = flushNow
+  const checkpoint = useProgressCheckpoint(bookId, () => {
+    if (phase !== 'ready' || !restoredRef.current) return null
+    syncAnchorFromScroll(false)
+    return { chapterIndex: chapterRef.current, charOffset: anchorRef.current,
+      page: chapterRef.current + 1, mode: 'page' }
+  }, (error) => {
+    console.error('[book-reader] 进度保存失败', error)
+    setToast('阅读进度未能保存，请检查设备存储空间')
+  })
+  checkpointRef.current = checkpoint
 
-  const scheduleSave = useCallback(() => {
-    dirtyRef.current = true
-    clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => flushRef.current(), 600)
+  useEffect(() => {
+    if (phase === 'ready' && restoredRef.current) checkpoint.schedule()
+  }, [chapter, page, phase, checkpoint])
+
+  useEffect(() => () => {
+    clearTimeout(restoreWatchRef.current)
+    restoreAbortRef.current?.abort()
   }, [])
-
-  useEffect(() => {
-    if (phase !== 'ready' || !restoredRef.current) return
-    scheduleSave()
-  }, [chapter, page, phase, bookId, scheduleSave])
-
-  // 兜底写出：离开阅读器 / 页面转后台时立刻补写（只依赖 bookId，cleanup 只在真卸载时跑）
-  useEffect(() => {
-    const flush = () => flushRef.current()
-    const onHide = () => {
-      if (document.visibilityState === 'hidden') flush()
-    }
-    window.addEventListener('pagehide', flush)
-    document.addEventListener('visibilitychange', onHide)
-    return () => {
-      window.removeEventListener('pagehide', flush)
-      document.removeEventListener('visibilitychange', onHide)
-      clearTimeout(restoreWatchRef.current)
-      restoreAbortRef.current?.abort()
-      // 强制补写：dirty 标志若因任何竞态漏置，退出时仍以当前锚点兜底
-      if (restoredRef.current) dirtyRef.current = true
-      flush()
-    }
-  }, [bookId])
 
   /* ---------------- 外观 / 缩放 ---------------- */
 
@@ -1016,6 +983,14 @@ export default function EpubReader({ bookId, title, onBack }) {
     savePrefs({ readerKeepAwake: next })
     keepAwake.setOn(next)
   }, [keepAwake])
+
+  const readerGesture = useReaderGesture({
+    mode: flow, shouldIgnoreSwipe,
+    blocked: () => phase !== 'ready' || drawer || appearance || menu || !!popoverRef.current,
+    next: nextPage, previous: prevPage,
+  })
+
+  gestureRef.current = readerGesture
 
   const menuRows = [
     {
@@ -1130,7 +1105,7 @@ export default function EpubReader({ bookId, title, onBack }) {
    */
   const onStageClick = useCallback(
     (e) => {
-      if (popoverRef.current) return
+      if (gestureRef.current?.shouldIgnoreClick() || popoverRef.current) return
       const sel = window.getSelection()
       if (sel && !sel.isCollapsed) return
 
@@ -1206,7 +1181,10 @@ export default function EpubReader({ bookId, title, onBack }) {
     const cols = colRef.current
     if (!cols) return
     const data = selectionOffsets(cols)
-    if (!data) return
+    if (!data) {
+      if (popoverRef.current?.mode === 'new') closePopover()
+      return
+    }
     // 段上的 data-start 就是**章内**偏移，所以不用再减章起点（TXT 那边要减）
     const next = {
       mode: 'new',
@@ -1217,17 +1195,19 @@ export default function EpubReader({ bookId, title, onBack }) {
     }
     popoverRef.current = next
     setPopover(next)
-  }, [])
+  }, [closePopover])
 
   useEffect(() => {
     let down = false
     let timer = 0
-    const onDown = () => {
+    const onDown = (event) => {
       down = true
+      clearTimeout(timer)
     }
-    const onUp = () => {
+    const onUp = (event) => {
       down = false
       clearTimeout(timer)
+      if (event.target.closest?.('.popover')) return
       timer = setTimeout(openForSelection, 60)
     }
     const onSelChange = () => {
@@ -1237,11 +1217,13 @@ export default function EpubReader({ bookId, title, onBack }) {
     }
     document.addEventListener('pointerdown', onDown, true)
     document.addEventListener('pointerup', onUp, true)
+    document.addEventListener('pointercancel', onUp, true)
     document.addEventListener('selectionchange', onSelChange)
     return () => {
       clearTimeout(timer)
       document.removeEventListener('pointerdown', onDown, true)
       document.removeEventListener('pointerup', onUp, true)
+      document.removeEventListener('pointercancel', onUp, true)
       document.removeEventListener('selectionchange', onSelChange)
     }
   }, [openForSelection])
@@ -1260,8 +1242,14 @@ export default function EpubReader({ bookId, title, onBack }) {
 
   const pickColor = useCallback(
     async (color) => {
-      const p = popoverRef.current
+      let p = popoverRef.current
       if (!p) return
+      if (!p.existing) {
+        const latest = selectionOffsets(colRef.current)
+        if (!latest) { dismissPopover(); return }
+        const base = 0
+        p = { ...p, from: Math.max(0, latest.from - base), to: Math.max(0, latest.to - base), text: latest.text }
+      }
       try {
         if (p.existing) {
           await updateHighlight(p.existing.id, { color })
@@ -1280,11 +1268,13 @@ export default function EpubReader({ bookId, title, onBack }) {
         await reloadHighlights()
       } catch (err) {
         console.error('[book-reader] 保存高亮失败', err)
+        setToast('高亮未能保存，请检查设备存储空间')
+        return
       }
       clearNativeSelection()
       closePopover()
     },
-    [bookId, closePopover, reloadHighlights]
+    [bookId, closePopover, dismissPopover, reloadHighlights]
   )
 
   const removeMark = useCallback(
@@ -1329,9 +1319,9 @@ export default function EpubReader({ bookId, title, onBack }) {
     setPopover(next)
   }, [])
 
-  const onExportNotes = useCallback(() => {
+  const onExportNotes = useCallback(async () => {
     try {
-      const r = exportNotes({ title }, highlights, { unit: '节', bookmarks })
+      const r = await exportNotes({ title }, highlights, { unit: '节', bookmarks })
       setToast(r.count ? `已导出 ${r.count} 条笔记：${r.filename}` : '这本书还没有笔记，已导出空文件')
     } catch (err) {
       setToast(`导出失败：${err?.message || '未知错误'}`)
@@ -1367,7 +1357,14 @@ export default function EpubReader({ bookId, title, onBack }) {
           out.push('')
           continue
         }
-        const built = await buildChapter({ html, chapterPath: ch.path })
+        const built = await buildChapter({
+          html,
+          chapterPath: ch.path,
+          // 图片段虽无文字，仍占一个虚拟换行。索引必须保留与正文相同的
+          // 有效图片段，否则图片之后的搜索偏移会少算。这里只检查包内存在性，
+          // 不解码全书图片，也不创建需要回收的 objectURL。
+          getResource: async (path) => book.zip.has(path) ? 'data:,' : null,
+        })
         out.push(built.text)
       }
       textsRef.current = out
@@ -1459,6 +1456,7 @@ export default function EpubReader({ bookId, title, onBack }) {
         className="txt-stage"
         onClick={onStageClick}
         onContextMenu={(e) => {
+          gestureRef.current?.cancel()
           if (!COARSE_POINTER) e.preventDefault()
         }}
       >
@@ -1466,57 +1464,12 @@ export default function EpubReader({ bookId, title, onBack }) {
           className={`txt-viewport${flow === 'scroll' ? ' scroll-flow' : ''}`}
           ref={vpRef}
           onScroll={onScroll}
-          onTouchStart={(e) => {
-            // 双指落下时不要用它当「滑动起点」：两指的起点终点混在一起会算出一个
-            // 巨大的位移，松手时被当成翻页
-            if (e.touches.length > 1) {
-              touchRef.current = null
-              return
-            }
-            const t = e.touches[0]
-            touchRef.current = { x: t.clientX, y: t.clientY }
-          }}
-          onTouchMove={(e) => {
-            // 滚动模式：滚到底（到顶）之后**继续**滑 → 换节。
-            // 「只在当前节内滚动」需要一个自然的出口，否则读完本节就卡住了。
-            // 判据取「已经在边界上 + 手指还往边界外推」，所以正常浏览永远不会误触发。
-            if (flowRef.current !== 'scroll') return
-            const start = touchRef.current
-            const vp = vpRef.current
-            if (!start || !vp || e.touches.length > 1) return
-            const max = Math.max(0, vp.scrollHeight - vp.clientHeight)
-            const dy = e.touches[0].clientY - start.y
-            if (vp.scrollTop >= max - 2 && dy < -80) {
-              touchRef.current = null // 一次滑动只换一节，免得连跳
-              nextPage()
-            } else if (vp.scrollTop <= 2 && dy > 80) {
-              touchRef.current = null
-              prevPage()
-            }
-          }}
-          onTouchEnd={(e) => {
-            const start = touchRef.current
-            touchRef.current = null
-            if (!start) return
-            // 刚做完双指缩放：`changedTouches[0]` 的位移可能远超 50px，别误判成翻页
-            if (shouldIgnoreSwipe()) return
-            // 滚动模式下上下滑就是浏览本身，横向轻滑不该被当成「滚一屏」翻页
-            if (flowRef.current === 'scroll') return
-            // 用户在长按选词或拖拽调整选区时，位移易超阈值，不能误判成翻页
-            const sel = window.getSelection()
-            if (sel && !sel.isCollapsed && sel.toString().trim()) return
-            const t = e.changedTouches[0]
-            const dx = t.clientX - start.x
-            const dy = t.clientY - start.y
-            if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) {
-              if (dx < 0) nextPage()
-              else prevPage()
-            }
-          }}
+          {...readerGesture.handlers}
         >
           <div
             className={`txt-columns${flow === 'scroll' ? ' scroll-flow' : ''}`}
             ref={setCols}
+            data-chapter={chapter}
             style={
               flow === 'scroll'
                 ? undefined
@@ -1525,7 +1478,6 @@ export default function EpubReader({ bookId, title, onBack }) {
           >
             {rendered.map((s, i) => {
               const common = {
-                key: i,
                 className: `txt-p${s.kind === 'h' ? ' txt-p-title' : ''}`,
                 'data-seg': i,
                 'data-start': s.start,
@@ -1536,7 +1488,7 @@ export default function EpubReader({ bookId, title, onBack }) {
                 dangerouslySetInnerHTML: { __html: s.html },
               }
               // <hr> 是块级，塞进 <p> 会被浏览器「抬」出去，DOM 一变偏移就全错
-              return s.wrap === false ? <div {...common} /> : <p {...common} />
+              return s.wrap === false ? <div key={i} {...common} /> : <p key={i} {...common} />
             })}
           </div>
         </div>

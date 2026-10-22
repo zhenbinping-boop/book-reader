@@ -135,7 +135,7 @@
         assertEq('clear 后深度归零', h.depth, 0)
 
         /* ================= 2. PDF 阅读器 ================= */
-        const pdfBytes = await (await fetch('/@fs/D:/book-reader/samples/sample.pdf')).arrayBuffer()
+        const pdfBytes = await (await fetch('/samples/sample.pdf')).arrayBuffer()
         const pdfBook = await importFile(new File([pdfBytes], 'sample.pdf', { type: 'application/pdf' }))
         log('importFile(pdf) -> ' + pdfBook.id + ' (' + pdfBook.status + ', ' + pdfBook.format + ')')
         assertEq('PDF 识别为 pdf', pdfBook.format, 'pdf')
@@ -180,7 +180,7 @@
         await sleep(150)
 
         /* ================= 3. TXT 阅读器 ================= */
-        const txtBytes = await (await fetch('/@fs/D:/book-reader/samples/sample-utf8.txt')).arrayBuffer()
+        const txtBytes = await (await fetch('/samples/sample-utf8.txt')).arrayBuffer()
         const txtBook = await importFile(new File([txtBytes], 'sample-utf8.txt', { type: 'text/plain' }))
         log('importFile(txt) -> ' + txtBook.id + ' (' + txtBook.format + ', ' + txtBook.chapters + ' 章)')
         assertEq('TXT 识别为 txt', txtBook.format, 'txt')

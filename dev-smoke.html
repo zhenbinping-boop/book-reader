@@ -44,7 +44,7 @@
         log('boot')
 
         // ---- 1. 数据链路 ----
-        const res = await fetch('/@fs/D:/book-reader/samples/sample.pdf')
+        const res = await fetch('/samples/sample.pdf')
         const blob = await res.blob()
         log('fetched ' + blob.size + ' bytes')
 

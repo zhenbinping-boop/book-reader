@@ -63,15 +63,15 @@
 
 ## 本地运行
 
+需要 **Node.js 22.13.0 或更新版本**。运行应用不需要 Python；浏览器回归工具需要 Python 3。
+
 ```bash
-npm install
-
-# 从 node_modules 复制 pdf.js 的中文 CMap 与标准字体到 public/
-# 这些文件未纳入版本控制，首次 clone 后必须执行，否则中文 PDF 会缺字
-python tools/copy_pdf_assets.py
-
+npm ci
 npm run dev
 ```
+
+启动和构建会自动把 pdf.js 的中文 CMap 与标准字体复制到 `public/`，无需手工准备。
+本轮代码检查、修复记录和发展建议见 [CODE_REVIEW.md](CODE_REVIEW.md)。
 
 打开 `http://localhost:5173`，导入 `samples/` 下的样例试用：
 
@@ -89,11 +89,8 @@ npm run dev
 npm run build
 ```
 
-> 若构建报「删除 dist 失败」，先手动删除 `dist/` 目录再执行。
-> 清空 `dist/` 时其中 170+ 个 CMap 文件可能触发部分环境的安全删除守卫。
-
 构建产物是纯静态文件，可直接托管在 GitHub Pages / Cloudflare Pages / 对象存储上。
-部署到子路径时加 `--base=/book-reader/`；根路径用默认值即可 —— manifest 与 `start_url` 都写了相对路径，两种都成立。
+部署到子路径时用 `npm run build -- --base=/book-reader/`；根路径用默认值即可 —— manifest 与 `start_url` 都写了相对路径，两种都成立。
 
 ### 装到手机
 
@@ -102,7 +99,7 @@ npm run build
 - **Android / Chrome**：菜单里选「安装应用」或「添加到主屏幕」
 - **iOS / Safari**：分享 → 「添加到主屏幕」
 
-之后从主屏图标启动即可全屏离线使用。
+首次联网打开后，等待 Service Worker 完成离线资源缓存，再从主屏图标启动即可离线使用。PDF worker、中文 CMap 和标准字体也包含在离线缓存中。
 
 ## 项目结构
 
@@ -153,17 +150,34 @@ dev-*.html                   回归测试页（仅供开发，不参与构建）
 
 ## 测试
 
-不需要测试框架 —— 每个 `dev-*.html` 是一页自包含的断言脚本，在真实浏览器里跑，
-页面自己把结果打到日志（并回传给 `tools/browser_smoke.py`）：
+测试不依赖额外框架：纯逻辑用 Node 内置 `node:test`，布局与数据流使用真实浏览器中的断言页面。
 
 ```bash
-node node_modules/vite/bin/vite.js dev .            # 先起 dev server
+# 逻辑单元测试：手势判定、进度检查点、PDF 页内坐标
+npm test
+
+# 移动端核心验收：自动启动隔离测试服务器，执行后关闭
+npm run test:mobile
+
+# 全部浏览器回归，包括续读、笔记、备份、搜索、书签等
+npm run test:acceptance
+
+# 已有开发服务器时，也能手动单跑任一页
 python tools/browser_smoke.py http://localhost:5173/dev-bookmark.html
 ```
+
+浏览器验收需要 Python 3，以及 Chrome / Chromium / Edge。工具自动发现浏览器；找不到时用 `CHROME_BIN` 指定可执行文件。
+每页使用独立临时 profile，不接触日常书库。出现断言失败、页面异常或未跑完时返回非零退出码。
+`npm run test:acceptance -- --timeout 180` 可调整单页超时。
+`dev-android.html` 是手动 CDP 调试页，不包含在自动套件中。
+
+`.github/workflows/verify.yml` 已配置单元测试 → 浏览器验收 → 生产构建；推送后才会实际执行远端检查。
+本轮移动问题修复与真机验收清单见 [MOBILE_FIXES.md](MOBILE_FIXES.md)。
 
 | 页面 | 覆盖面 |
 |---|---|
 | `dev-mobile.html` | 双指缩放 / 沉浸 / 常亮（合成触摸事件） |
+| `dev-mobile-acceptance.html` | 三格式续读、长段跨栏、页内位置、滑动取消 / 长按 / 双指、选区与高亮保存 |
 | `dev-txt.html` | TXT 解码、分章、分栏、划词、排版面板 |
 | `dev-epub.html` | ZIP / EPUB 结构 / XHTML 展平（解析层） |
 | `dev-epub-reader.html` | EPUB 阅读器集成（分页、深链、图片重排、进度恢复） |
@@ -176,6 +190,8 @@ python tools/browser_smoke.py http://localhost:5173/dev-bookmark.html
 | `dev-text.html` | 文本索引与搜索归一化 |
 | `dev-tokens.html` | 设计 token 与对比度 |
 | `dev-smoke.html` | 冒烟 |
+| `dev-storage.html` | 事务回滚、并发进度、备份校验 / 去重、作者恢复、路由与书架刷新 |
+| `dev-backclose.html` | 快速关闭重开浮层、切换浮层、浏览器返回历史清理 |
 
 ## 已知限制
 
@@ -186,7 +202,7 @@ python tools/browser_smoke.py http://localhost:5173/dev-bookmark.html
 - PDF 的**连续滚动模式**下方向键翻页无效，需切到单页模式
 - 高亮矩形会接收指针事件，无法从高亮内部起拖（需要分层命中判定）
 - EPUB 只支持 stored / deflate 压缩，不支持加密与 ZIP64
-- **iOS Safari 会清理长期未访问的 IndexedDB**（约 7 天无交互）—— 用「备份」导出 JSON 兜底
+- 浏览器可能因存储压力或站点存储策略清理 IndexedDB；持久化存储申请不能替代备份，请定期导出重要笔记和书籍
 
 ## 明确不做
 
@@ -194,3 +210,19 @@ python tools/browser_smoke.py http://localhost:5173/dev-bookmark.html
 - 在线书城
 - DRM 破解、MOBI / AZW3 格式
 - 阅读数据上报（既然承诺「文件不上传」，连埋点也不做）
+
+
+## Android Alpha 安装包
+
+原生工程使用 Capacitor 8，应用 ID 为 `io.github.zhenbinpingboop.bookreader`。APK 内置网页、PDF worker、字体和 CMaps，无需联网即可导入和阅读。Android 7.0+，系统 WebView 140+；旧 WebView 会显示更新提示。
+
+```bash
+npm ci
+npm run android:apk
+```
+
+本地构建需要 JDK 21、Android SDK 36 和 Build Tools 36.0.0，输出 `android/app/build/outputs/apk/debug/app-debug.apk`。也可在 GitHub Actions 的 **Verify reader** 工作流下载 `book-reader-android-alpha` 构建产物：只有单元测试、浏览器验收和网页构建通过后才会构建 APK，并检查签名和离线资源。
+
+CI 使用仓库 Secret `ANDROID_DEBUG_KEYSTORE_BASE64` 中固定的 Alpha 测试签名，后续测试版保持同一签名并递增 `versionCode`，可覆盖安装。请保留该 Secret；本机自动生成的 debug 签名不一定相同。Alpha 不是商店正式签名版本，正式发布前需规划长期签名。APK 更新需要下载安装新包，网页部署不会自动替换已安装 APK 的代码。
+
+首次安装 APK 时，浏览器/PWA 的本地书库不会自动迁入；先在原版导出包含书籍的完整备份，再到 APK 的备份面板恢复。APK 中的备份与 Markdown 导出通过系统分享面板保存或发送。卸载前请备份。

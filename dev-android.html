@@ -52,7 +52,7 @@
         localStorage.removeItem('book-reader:prefs')
         savePrefs({ readerFlow: 'scroll' })
 
-        const url = '/@fs/D:/book-reader/samples/sample-giant.epub'
+        const url = '/samples/sample-giant.epub'
         const buf = await (await fetch(url)).arrayBuffer()
         const file = new File([buf], 'sample.epub', { type: 'application/epub+zip' })
         const re = await importFile(file)

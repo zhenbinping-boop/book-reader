@@ -40,7 +40,7 @@
         log('pdfjs version: ' + pdfjsLib.version)
 
         // ---- 1. 导入并挂载 ----
-        const res = await fetch('/@fs/D:/book-reader/samples/sample.pdf')
+        const res = await fetch('/samples/sample.pdf')
         const blob = await res.blob()
         const { importPdf } = await import('/src/lib/importer.js')
         const imported = await importPdf(new File([blob], 'sample.pdf', { type: 'application/pdf' }))

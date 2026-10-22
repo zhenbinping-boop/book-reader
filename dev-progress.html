@@ -74,9 +74,9 @@
         log('db cleared')
 
         const asFile = async (name, url, type) => new File([await (await fetch(url)).arrayBuffer()], name, { type })
-        const TXT_URL = '/@fs/D:/book-reader/samples/sample-utf8.txt'
-        const EPUB_URL = '/@fs/D:/book-reader/samples/sample.epub'
-        const GIANT_URL = '/@fs/D:/book-reader/samples/sample-giant.epub'
+        const TXT_URL = '/samples/sample-utf8.txt'
+        const EPUB_URL = '/samples/sample.epub'
+        const GIANT_URL = '/samples/sample-giant.epub'
 
         /* ---------- 公共工具 ---------- */
         const vp = () => host.querySelector('.txt-viewport')
@@ -297,7 +297,7 @@
            旧 gate 等整章图片就位 → 被一张「永远不加载」的图按住 → 每次打开停在章首
            （安卓带图 EPUB 的真实故障）。修后 gate 只等「锚点及以上」的图。 */
         {
-          const LAZY_URL = '/@fs/D:/book-reader/samples/sample-lazy.epub'
+          const LAZY_URL = '/samples/sample-lazy.epub'
           const re = await importFile(await asFile('sample-lazy.epub', LAZY_URL, 'application/epub+zip'))
           savePrefs({ readerFlow: 'scroll' })
           const mount = () => {

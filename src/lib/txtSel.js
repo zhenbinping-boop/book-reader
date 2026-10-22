@@ -57,6 +57,44 @@ export function pageOfSegment(columnsEl, segIndex, geo) {
   return el ? columnAt(el, geo) : -1
 }
 
+/** 字符所在的栏；长段落横跨多栏时，段落包围盒只能给出第一栏。 */
+export function pageOfCharacter(columnsEl, segIndex, intra, geo) {
+  const el = columnsEl?.children?.[segIndex]
+  const rect = characterRectAt(el, intra)
+  return rect ? columnAt({ getBoundingClientRect: () => rect }, geo) : pageOfSegment(columnsEl, segIndex, geo)
+}
+
+/** 当前横向视口内的首字符，保留跨栏长段落的章内位置。 */
+export function intraOffsetAtColumn(segEl, vp) {
+  if (!segEl || !vp) return 0
+  const left = vp.getBoundingClientRect().left + 1
+  let acc = 0
+  for (const node of textNodesOf(segEl)) {
+    const len = node.nodeValue.length
+    if (!len) continue
+    if (charRect(node, len - 1)?.right <= left) { acc += len; continue }
+    let lo = 0, hi = len - 1
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (charRect(node, mid)?.right > left) hi = mid
+      else lo = mid + 1
+    }
+    return acc + lo
+  }
+  return acc
+}
+
+function characterRectAt(el, intra) {
+  const nodes = textNodesOf(el)
+  let offset = Math.max(0, intra || 0)
+  for (const node of nodes) {
+    if (offset < node.nodeValue.length) return charRect(node, offset)
+    offset -= node.nodeValue.length
+  }
+  const last = nodes[nodes.length - 1]
+  return last?.nodeValue.length ? charRect(last, last.nodeValue.length - 1) : null
+}
+
 /** 按文档顺序遍历元素内的文本节点 */
 function textNodesOf(root) {
   if (!root) return []

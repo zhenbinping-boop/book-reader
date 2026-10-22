@@ -459,7 +459,7 @@
           return last
         }
 
-        const txtBytes = await (await fetch('/@fs/D:/book-reader/samples/sample-utf8.txt')).arrayBuffer()
+        const txtBytes = await (await fetch('/samples/sample-utf8.txt')).arrayBuffer()
         const txtBook = await importFile(new File([txtBytes], 'sample-utf8.txt', { type: 'text/plain' }))
 
         let root = makeRoot()
@@ -618,7 +618,7 @@
         await sleep(150)
 
         /* ================= 7. PDF 阅读器集成 ================= */
-        const pdfBytes = await (await fetch('/@fs/D:/book-reader/samples/sample.pdf')).arrayBuffer()
+        const pdfBytes = await (await fetch('/samples/sample.pdf')).arrayBuffer()
         const pdfBook = await importFile(new File([pdfBytes], 'sample.pdf', { type: 'application/pdf' }))
 
         root = makeRoot()

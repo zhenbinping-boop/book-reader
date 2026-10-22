@@ -6,7 +6,7 @@ export default function SelectionPopover({ data, onPick, onDelete, onCopy, onClo
   const vh = window.innerHeight
 
   const isCoarse =
-    typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
+    (typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches) || navigator.maxTouchPoints > 0
 
   const left = Math.min(Math.max(8, rect.left + rect.width / 2 - W / 2), Math.max(8, vw - W - 8))
 
@@ -24,11 +24,14 @@ export default function SelectionPopover({ data, onPick, onDelete, onCopy, onClo
 
   return (
     <>
-      <div className="popover-mask" onMouseDown={onClose} onTouchStart={onClose} />
+      {!isCoarse && <div className="popover-mask" onMouseDown={onClose} />}
       <div
         className="popover"
-        style={{ left, top, width: W, height: H }}
-        onMouseDown={(e) => e.stopPropagation()}
+        role="toolbar"
+        aria-label="选中文字操作"
+        data-placement={isCoarse ? 'bottom' : 'floating'}
+        style={isCoarse ? undefined : { left, top, width: W, height: H }}
+        onMouseDown={(e) => { e.preventDefault(); e.stopPropagation() }}
         onTouchStart={(e) => e.stopPropagation()}
       >
         {data.existing ? (
@@ -67,6 +70,7 @@ export default function SelectionPopover({ data, onPick, onDelete, onCopy, onClo
             </button>
           </>
         )}
+        {isCoarse && <button className="pop-btn" aria-label="关闭选中文字操作" onClick={onClose}>关闭</button>}
       </div>
     </>
   )

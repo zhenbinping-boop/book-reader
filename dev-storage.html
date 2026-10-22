@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>Storage reliability regression</title></head>
+<body><pre id="log"></pre>
+<script type="module">
+const log = (line) => {
+  document.querySelector('#log').textContent += line + '\n'
+  fetch('http://127.0.0.1:5178/log', { method: 'POST', body: line }).catch(() => {})
+}
+let failed = 0
+const check = (label, condition) => {
+  if (!condition) failed++
+  log(`${condition ? 'ok  ' : 'BAD '}${label}`)
+}
+const rejects = async (label, fn) => {
+  let rejected = false
+  try { await fn() } catch { rejected = true }
+  check(label, rejected)
+}
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+try {
+  const { db, putBook, saveProgress, deleteBook, attachBlob } = await import('/src/db.js')
+  const { buildBackup, restoreBackup, parseBackup } = await import('/src/lib/backup.js')
+  await db.delete()
+  await db.open()
+  const book = { title: '可靠性测试', author: '测试作者', format: 'txt', pageCount: 5,
+    fileHash: 'sha256:storage-test', blob: new Blob(['第一章 开头\n正文\n第二章 结束\n终章']) }
+
+  await rejects('导入的 Blob 无法序列化时失败', () => putBook({ ...book, blob: () => {} }))
+  check('导入失败不留书目', await db.books.count() === 0)
+  check('导入失败不留进度或文件', await db.progress.count() === 0 && await db.blobs.count() === 0)
+
+  const id = await putBook(book)
+  await Promise.all([saveProgress(id, { page: 3 }), saveProgress(id, { zoom: 1.75 })])
+  const progress = await db.progress.get(id)
+  check('并发保存保留页码和缩放两个补丁', progress.page === 3 && progress.zoom === 1.75)
+  check('阅读进度标记 started', progress.started === true)
+  const backup = await buildBackup({ includeFiles: true })
+  check('作者进入备份', backup.books[0].author === book.author)
+  check('无文件名时按真实格式导出', backup.files[0].name.endsWith('.txt'))
+  check('无 MIME 时按真实格式导出', backup.files[0].type === 'text/plain')
+
+  const placeholder = structuredClone(backup)
+  placeholder.progress[0] = { bookId: id, page: 1, started: false, updatedAt: Date.now() + 99999 }
+  await restoreBackup(placeholder)
+  check('较新的未读占位不覆盖真实进度', (await db.progress.get(id)).page === 3)
+
+  await deleteBook(id)
+  await saveProgress(id, { page: 4 })
+  check('删除后迟到的进度写入不留孤儿', await db.progress.count() === 0)
+  await rejects('删除后不能接回 Blob', () => attachBlob(id, new Blob(['late'])))
+  check('接回失败不留孤立文件', await db.blobs.count() === 0)
+
+  const invalid = structuredClone(backup)
+  invalid.files[0].data = '%%%not-base64%%%'
+  await rejects('无效 base64 在写入前被拒绝', () => restoreBackup(invalid))
+  check('无效文件恢复没有残留书目', await db.books.count() === 0)
+  await rejects('无效列表字段被拒绝', () => restoreBackup({ ...backup, highlights: {} }))
+  await rejects('重复书籍编号被拒绝', () => parseBackup(JSON.stringify({ ...backup, books: [backup.books[0], backup.books[0]] })))
+
+  const broken = structuredClone(backup)
+  broken.highlights = [{ bookId: id, page: 0, text: '回滚', start: { item: 0, offset: 0 }, end: { item: 0, offset: 1 } }]
+  const failWrite = () => { throw new Error('模拟存储失败') }
+  db.highlights.hook('creating', failWrite)
+  try {
+    await rejects('恢复中途的存储错误上抛', () => restoreBackup(broken))
+  } finally {
+    db.highlights.hook('creating').unsubscribe(failWrite)
+  }
+  check('恢复中途失败整体回滚书目', await db.books.count() === 0)
+  check('恢复中途失败整体回滚进度', await db.progress.count() === 0)
+
+  const sameHash = structuredClone(backup)
+  sameHash.books.push({ ...sameHash.books[0], id: id + 100 })
+  sameHash.bookmarks = [{ bookId: id + 100, page: 0, charOffset: 12 }]
+  const restored = await restoreBackup(sameHash)
+  check('同一备份中的重复指纹只建一本', restored.addedBooks === 1 && await db.books.count() === 1)
+  const target = (await db.books.toArray())[0]
+  check('清库恢复保留作者', target.author === book.author)
+  check('清库恢复保留真实进度', (await db.progress.get(target.id)).page === 3)
+  check('重复指纹的书签接到同一本', (await db.bookmarks.toArray())[0].bookId === target.id)
+  check('原文件恢复成功', (await db.blobs.get(target.id)).blob.size === book.blob.size)
+  const pdfId = await putBook({ title: 'PDF 坐标验收', format: 'pdf', pageCount: 6, blob: new Blob(['pdf']) })
+  await saveProgress(pdfId, { page: 3, scrollPage: 3, pageOffset: .65 })
+  await saveProgress(pdfId, { zoom: 1.5 })
+  check('PDF 只改缩放保留页内坐标', (await db.progress.get(pdfId)).pageOffset === .65)
+  await saveProgress(pdfId, { page: 1 })
+  const pageReset = await db.progress.get(pdfId)
+  check('PDF 显式跳页清理上一页坐标', pageReset.scrollPage === 1 && pageReset.pageOffset === 0)
+  await deleteBook(pdfId)
+  const second = await restoreBackup(sameHash)
+  check('重复恢复不增加书签', second.bookmarks === 0 && await db.bookmarks.count() === 1)
+
+  // 路由不能因不稳定对象依赖而持续查询书目。
+  const React = await import('react')
+  const { createRoot } = await import('react-dom/client')
+  const App = (await import('/src/App.jsx')).default
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  let reads = 0
+  const onRead = (row) => { reads++; return row }
+  db.books.hook('reading', onRead)
+  const root = createRoot(host)
+  try {
+    location.hash = `#/read/${target.id}`
+    root.render(React.createElement(App))
+    await sleep(1500)
+    const before = reads
+    await sleep(400)
+    check('路由稳定后不持续重读书目', reads === before)
+    check('按需加载后正文可见', !!host.querySelector('.txt-reader'))
+    const unstartedId = await putBook({ ...book, title: '未读测试', fileHash: 'sha256:unstarted' })
+    location.hash = '#/'
+    await sleep(400)
+    check('返回书架时刷新新数据', host.querySelectorAll('.card').length === 2)
+    const card = [...host.querySelectorAll('.card')].find((el) => el.textContent.includes('未读测试'))
+    check('刚导入的书不显示已读百分比', !!card && !card.querySelector('.card-meta').textContent.includes('已读'))
+    await deleteBook(unstartedId)
+  } finally {
+    root.unmount()
+    db.books.hook('reading').unsubscribe(onRead)
+  }
+  log(failed ? `RESULT: FAIL (${failed})` : 'RESULT: PASS')
+} catch (error) {
+  log('THROWN: ' + (error.stack || error))
+}
+log('ALL DONE')
+</script>
+</body></html>

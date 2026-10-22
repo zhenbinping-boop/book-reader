@@ -84,8 +84,8 @@
         const asFile = async (name, url, type) =>
           new File([await (await fetch(url)).arrayBuffer()], name, { type })
 
-        const epub3 = await asFile('sample.epub', '/@fs/D:/book-reader/samples/sample.epub', 'application/epub+zip')
-        const epub2 = await asFile('sample-ncx.epub', '/@fs/D:/book-reader/samples/sample-ncx.epub', 'application/epub+zip')
+        const epub3 = await asFile('sample.epub', '/samples/sample.epub', 'application/epub+zip')
+        const epub2 = await asFile('sample-ncx.epub', '/samples/sample-ncx.epub', 'application/epub+zip')
         log(`样例：${epub3.name} ${epub3.size}B / ${epub2.name} ${epub2.size}B`)
 
         /* ---------- 1. importFile：解析 → 落库 ---------- */
@@ -114,7 +114,7 @@
         ok('原文件存在（blob 不是空壳）', b1blob instanceof Blob && b1blob.size > 1000)
 
         /* ---------- 2. 重复导入：指纹去重，不多出一本 ---------- */
-        const r1b = await importFile(await asFile('改个名字.epub', '/@fs/D:/book-reader/samples/sample.epub', 'application/epub+zip'))
+        const r1b = await importFile(await asFile('改个名字.epub', '/samples/sample.epub', 'application/epub+zip'))
         assertEq('同名内容再导入 → duplicate', r1b.status, 'duplicate')
         assertEq('改名也算同一本', r1b.id, epubId)
         assertEq('书架仍然 1 本', (await listBooks()).length, 1)

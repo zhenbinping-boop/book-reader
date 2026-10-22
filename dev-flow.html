@@ -131,7 +131,7 @@
           fmts[0].click()
           assertEq('点 PDF 时选择器收窄到 PDF', fileInput.getAttribute('accept'), '.pdf,application/pdf')
           fmts[2].click()
-          assertEq('点 EPUB 时收窄到 EPUB', fileInput.getAttribute('accept'), '.epub,application/epub+zip')
+          assertEq('点 EPUB 时收窄到 EPUB', fileInput.getAttribute('accept'), '.epub,application/epub+zip,application/octet-stream')
 
           sh.querySelector('.add-toggle').click()
           await until(() => sh.querySelector('.add-toggle')?.dataset.open === '0', 4000)
@@ -191,7 +191,7 @@
         await db.delete()
         await db.open()
         const asFile = async (name, url, type) => new File([await (await fetch(url)).arrayBuffer()], name, { type })
-        const TXT_URL = '/@fs/D:/book-reader/samples/sample-utf8.txt'
+        const TXT_URL = '/samples/sample-utf8.txt'
         const txtFile = await asFile('sample-utf8.txt', TXT_URL, 'text/plain')
         const rt = await importFile(txtFile)
         assertEq('TXT 导入', rt.format, 'txt')
@@ -299,7 +299,7 @@
         /* ================= 4. EPUB：同一条链路 ================= */
         await db.delete()
         await db.open()
-        const epubFile = await asFile('sample.epub', '/@fs/D:/book-reader/samples/sample.epub', 'application/epub+zip')
+        const epubFile = await asFile('sample.epub', '/samples/sample.epub', 'application/epub+zip')
         const re = await importFile(epubFile)
         assertEq('EPUB 导入', re.format, 'epub')
 
@@ -484,7 +484,7 @@
         await db.delete()
         await db.open()
         const re2 = await importFile(
-          await asFile('sample.epub', '/@fs/D:/book-reader/samples/sample.epub', 'application/epub+zip')
+          await asFile('sample.epub', '/samples/sample.epub', 'application/epub+zip')
         )
         savePrefs({ readerFlow: 'page' })
         const makeEpub2 = () => {

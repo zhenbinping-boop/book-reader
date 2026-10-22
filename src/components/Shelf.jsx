@@ -150,8 +150,8 @@ export default function Shelf({ books, onImport, onDelete, onOpenBackup }) {
             {books.map((b) => {
               const p = b.progress
               const pct =
-                p && b.pageCount && !b.missingFile
-                  ? Math.round((p.page / b.pageCount) * 100)
+                p && p.started !== false && b.pageCount && !b.missingFile
+                  ? Math.max(0, Math.min(100, Math.round((p.page / b.pageCount) * 100)))
                   : 0
               return (
                 <div className="card" key={b.id}>

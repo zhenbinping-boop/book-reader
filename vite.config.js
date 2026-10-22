@@ -14,16 +14,17 @@ async function optionalReact() {
   }
 }
 
-export default defineConfig(async () => {
+export default defineConfig(async ({ mode }) => {
   const plugins = [
     ...(await optionalReact()),
     VitePWA({
+      disable: mode === 'android',
       registerType: 'autoUpdate',
       includeAssets: ['icon-192.png', 'icon-512.png'],
       manifest: {
         name: '阅读器',
         short_name: '阅读器',
-        description: '导入 PDF 到手机，离线阅读',
+        description: '本地导入 PDF、TXT、EPUB，离线阅读与标注',
         lang: 'zh-CN',
         // 全部用相对路径：manifest 在 /book-reader/manifest.webmanifest 时，
         // '.' 会解析成 /book-reader/，这样部署在子路径或根路径都成立。
@@ -45,12 +46,13 @@ export default defineConfig(async () => {
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,png,svg,woff2}'],
+        // worker 是 .mjs；CMap / 字体也必须随安装缓存，才能离线首次打开 PDF。
+        globPatterns: ['**/*.{js,mjs,css,html,png,svg,woff2,bcmap,pfb,ttf}'],
         navigateFallback: 'index.html',
         cleanupOutdatedCaches: true,
         // pdf.js 的 CMap / worker 会超过 workbox 默认 2MB 上限
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
-        // cmaps 是按需拉取的，不进预缓存清单，但要能被离线缓存兜住
+        // 兼容旧版运行时缓存；当前版本的 CMap / 字体由预缓存覆盖。
         runtimeCaching: [
           {
             urlPattern: /\/(cmaps|standard_fonts)\//,
@@ -82,6 +84,7 @@ export default defineConfig(async () => {
       watch: { ignored: ['**/.tmp/**', '**/dist/**', '**/samples/**'] },
     },
     build: {
+      outDir: mode === 'android' ? 'dist-android' : 'dist',
       target: 'es2022',
       chunkSizeWarningLimit: 1500,
     },

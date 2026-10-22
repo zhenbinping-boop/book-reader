@@ -1,8 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import Shelf from './components/Shelf'
-import PdfReader from './components/PdfReader'
-import TxtReader from './components/TxtReader'
-import EpubReader from './components/EpubReader'
 import BackupPanel from './components/BackupPanel'
 import { listBooks, deleteBook, getBook } from './db'
 import { importFile } from './lib/importer'
@@ -10,6 +7,10 @@ import { backfillHashes } from './lib/backup'
 import { useHashRoute, goShelf } from './hooks/useHashRoute'
 import useBackClose from './hooks/useBackClose'
 import { applyThemeColor } from './lib/prefs'
+
+const PdfReader = lazy(() => import('./components/PdfReader'))
+const TxtReader = lazy(() => import('./components/TxtReader'))
+const EpubReader = lazy(() => import('./components/EpubReader'))
 
 export default function App() {
   const route = useHashRoute()
@@ -31,7 +32,9 @@ export default function App() {
     listBooks().then(setBooks)
   }, [])
 
-  useEffect(refresh, [refresh])
+  useEffect(() => {
+    if (route.name === 'shelf') refresh()
+  }, [refresh, route.name])
 
   // v2 之前导入的书还没有内容指纹，这里补算一次（只读本地 blob，不联网）。
   // 补上之后，备份恢复和「重新导入同一个文件」才能把笔记对回书上。
@@ -50,11 +53,12 @@ export default function App() {
   useEffect(() => {
     if (route.name !== 'read') return
     let alive = true
+    setBook(undefined)
     getBook(route.id).then((b) => alive && setBook(b ?? null))
     return () => {
       alive = false
     }
-  }, [route])
+  }, [route.name, route.id])
 
   useEffect(() => {
     if (!notice) return
@@ -93,7 +97,7 @@ export default function App() {
   }
 
   if (route.name === 'read') {
-    if (book === undefined) return <div className="center-msg">正在载入…</div>
+    if (book === undefined || (book && book.id !== route.id)) return <div className="center-msg">正在载入…</div>
     if (book === null) {
       return (
         <div className="center-msg">
@@ -124,7 +128,11 @@ export default function App() {
       )
     }
     const Reader = book.format === 'txt' ? TxtReader : book.format === 'epub' ? EpubReader : PdfReader
-    return <Reader key={book.id} bookId={book.id} title={book.title} onBack={goShelf} />
+    return (
+      <Suspense fallback={<div className="center-msg">正在载入…</div>}>
+        <Reader key={book.id} bookId={book.id} title={book.title} onBack={goShelf} />
+      </Suspense>
+    )
   }
 
   return (

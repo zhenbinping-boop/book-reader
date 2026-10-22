@@ -62,7 +62,7 @@
         await db.open()
         log('db cleared, tables=' + db.tables.map((t) => t.name).join(','))
 
-        const res = await fetch('/@fs/D:/book-reader/samples/sample.pdf')
+        const res = await fetch('/samples/sample.pdf')
         const blob = await res.blob()
         const makeFile = () => new File([blob], 'sample.pdf', { type: 'application/pdf' })
 
@@ -201,11 +201,14 @@
         assertEq('笔记仍在库中', (await dbmod.listHighlights(bid)).length, 1)
 
         // 回到第 1 页，确认笔记是「画出来」的，不只是存在库里
-        await dbmod.saveProgress(bid, { page: 1 })
         window.location.hash = '#/'
         await sleep(300)
+        // 先退出让最终检查点保存完，再设置下次打开位置。
+        // 活跃阅读器的最终保存应当反映它实际显示的位置。
+        await dbmod.saveProgress(bid, { page: 1 })
         window.location.hash = `#/read/${bid}`
         await sleep(5000)
+        assertEq('指定第 1 页后重进确实停在第 1 页', document.querySelector('.scrub-num')?.textContent.trim(), '1 / 6')
         const rectsAgain = document.querySelectorAll('.mark-rect').length
         ok(`重新进入后笔记照常渲染（${rectsAgain} 个矩形）`, rectsAgain >= 1)
         dump()

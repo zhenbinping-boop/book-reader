@@ -15,3 +15,16 @@ public/standard_fonts
 .workbuddy/
 # 工作台发布标记（记录本机绝对路径，对别人无意义）
 .wbapp_*.genie
+__pycache__/
+*.pyc
+
+# Android local state / signing credentials
+android/.gradle/
+android/**/build/
+android/local.properties
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/capacitor.plugins.json
+*.keystore
+*.jks
+*.apk

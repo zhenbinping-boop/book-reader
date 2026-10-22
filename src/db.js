@@ -51,34 +51,36 @@ export async function putBook({
   fileHash = null,
   fileName = null,
 }) {
-  const now = Date.now()
-  const id = await db.books.add({
-    title,
-    // 只有 EPUB 有作者信息（来自 OPF 的 dc:creator），PDF / TXT 留空
-    author,
-    format,
-    pageCount: pageCount ?? 0,
-    cover: cover ?? null,
-    fileHash,
-    fileName,
-    // 原文件丢失（如从备份恢复到一台还没重新导入文件的设备）时置 true
-    missingFile: false,
-    addedAt: now,
-    lastReadAt: now,
+  return db.transaction('rw', [db.books, db.blobs, db.progress], async () => {
+    const now = Date.now()
+    const id = await db.books.add({
+      title,
+      // 只有 EPUB 有作者信息（来自 OPF 的 dc:creator），PDF / TXT 留空
+      author,
+      format,
+      pageCount: pageCount ?? 0,
+      cover: cover ?? null,
+      fileHash,
+      fileName,
+      // 原文件丢失（如从备份恢复到一台还没重新导入文件的设备）时置 true
+      missingFile: false,
+      addedAt: now,
+      lastReadAt: now,
+    })
+    await db.blobs.put({ id, blob })
+    // started:false 表示「还没真正读过」的占位进度。
+    // 恢复时不能让刚导入书的 page=1 顶掉备份里真实的位置。
+    await db.progress.put({
+      bookId: id,
+      page: 1,
+      scaleMode: 'fit',
+      zoom: 1,
+      mode: 'scroll',
+      started: false,
+      updatedAt: now,
+    })
+    return id
   })
-  await db.blobs.put({ id, blob })
-  // started:false 表示「还没真正读过」的占位进度。
-  // 备份恢复时要靠它区分：别让刚导入书的 page=1 顶掉备份里真正读到的位置。
-  await db.progress.put({
-    bookId: id,
-    page: 1,
-    scaleMode: 'fit',
-    zoom: 1,
-    mode: 'scroll',
-    started: false,
-    updatedAt: now,
-  })
-  return id
 }
 
 export async function getBook(id) {
@@ -98,16 +100,25 @@ export async function listBooks() {
 }
 
 export async function saveProgress(bookId, patch) {
-  const prev = (await db.progress.get(Number(bookId))) ?? {}
-  // started:true —— 从这里写进来的都是真实阅读位置
-  await db.progress.put({
-    ...prev,
-    ...patch,
-    started: true,
-    bookId: Number(bookId),
-    updatedAt: Date.now(),
+  return db.transaction('rw', [db.books, db.progress], async () => {
+    // 删除后迟到的防抖写入不能重建一条孤立进度。
+    const book = await db.books.get(Number(bookId))
+    if (!book) return
+    const prev = (await db.progress.get(Number(bookId))) ?? {}
+    // 兼容只传页码的调用方：显式跳页不能继续带着上一页的页内坐标。
+    const pageStart = book.format === 'pdf' && Object.hasOwn(patch, 'page') && !Object.hasOwn(patch, 'scrollPage')
+      ? { scrollPage: patch.page, pageOffset: 0 } : {}
+    // started:true —— 从这里写进来的都是真实阅读位置
+    await db.progress.put({
+      ...prev,
+      ...patch,
+      ...pageStart,
+      started: true,
+      bookId: Number(bookId),
+      updatedAt: Date.now(),
+    })
+    await db.books.update(Number(bookId), { lastReadAt: Date.now() })
   })
-  await db.books.update(Number(bookId), { lastReadAt: Date.now() })
 }
 
 export async function deleteBook(id) {
@@ -136,8 +147,11 @@ export async function findBookByHash(hash) {
 /** 给一本书补上原文件（重新导入时把文件接回已有记录） */
 export async function attachBlob(bookId, blob, patch = {}) {
   const n = Number(bookId)
-  await db.blobs.put({ id: n, blob })
-  await db.books.update(n, { missingFile: false, ...patch })
+  return db.transaction('rw', [db.books, db.blobs], async () => {
+    if (!(await db.books.get(n))) throw new Error('这本书已被删除，请重新导入')
+    await db.blobs.put({ id: n, blob })
+    await db.books.update(n, { ...patch, missingFile: false })
+  })
 }
 
 /* ---------- 高亮 ---------- */

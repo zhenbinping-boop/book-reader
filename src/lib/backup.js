@@ -1,3 +1,4 @@
+import { isNative, nativeExport } from './native'
 import { db } from '../db'
 
 /**
@@ -52,7 +53,8 @@ export function formatBytes(n) {
   return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
 }
 
-export function downloadBlob(blob, filename) {
+export async function downloadBlob(blob, filename) {
+  if (isNative()) return nativeExport(blob, filename)
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -172,17 +174,28 @@ export async function requestPersistent() {
 /* ---------------- 导出 ---------------- */
 
 export async function buildBackup({ includeFiles = false } = {}) {
-  const books = await db.books.toArray()
+  // 一致性快照：读取期间不能混入另一标签页的导入、删除或进度更新。
+  // Blob 转码在事务外做，避免 FileReader/arrayBuffer 令 IndexedDB 事务提前结束。
+  const snapshot = await db.transaction('r',
+    [db.books, db.blobs, db.progress, db.highlights, db.bookmarks], async () => ({
+      books: await db.books.toArray(),
+      blobs: includeFiles ? await db.blobs.toArray() : [],
+      progress: await db.progress.toArray(),
+      highlights: await db.highlights.toArray(),
+      bookmarks: await db.bookmarks.toArray(),
+    }))
+  const { books } = snapshot
+  const blobs = new Map(snapshot.blobs.map((row) => [row.id, row.blob]))
   const files = []
   if (includeFiles) {
     for (const b of books) {
-      const row = await db.blobs.get(b.id)
-      if (!row?.blob) continue
+      const blob = blobs.get(b.id)
+      if (!blob) continue
       files.push({
         bookId: b.id,
-        name: b.fileName || `${b.title}.pdf`,
-        type: row.blob.type || 'application/pdf',
-        data: await blobToBase64(row.blob),
+        name: b.fileName || `${b.title}.${b.format || 'pdf'}`,
+        type: blob.type || ({ pdf: 'application/pdf', txt: 'text/plain', epub: 'application/epub+zip' }[b.format]) || 'application/octet-stream',
+        data: await blobToBase64(blob),
       })
     }
   }
@@ -194,6 +207,7 @@ export async function buildBackup({ includeFiles = false } = {}) {
     books: books.map((b) => ({
       id: b.id,
       title: b.title,
+      author: b.author ?? '',
       format: b.format,
       pageCount: b.pageCount ?? 0,
       cover: b.cover ?? null,
@@ -202,9 +216,9 @@ export async function buildBackup({ includeFiles = false } = {}) {
       addedAt: b.addedAt ?? null,
       lastReadAt: b.lastReadAt ?? null,
     })),
-    progress: await db.progress.toArray(),
-    highlights: await db.highlights.toArray(),
-    bookmarks: await db.bookmarks.toArray(),
+    progress: snapshot.progress,
+    highlights: snapshot.highlights,
+    bookmarks: snapshot.bookmarks,
     files,
   }
 }
@@ -219,7 +233,7 @@ export async function exportBackup({ includeFiles = false } = {}) {
   const text = JSON.stringify(data, null, 2)
   const blob = new Blob([text], { type: 'application/json' })
   const filename = `book-reader-backup-${stamp()}.json`
-  downloadBlob(blob, filename)
+  await downloadBlob(blob, filename)
   return {
     filename,
     bytes: blob.size,
@@ -277,11 +291,11 @@ export function notesToMarkdown(book, highlights, opts = {}) {
   return lines.join('\n')
 }
 
-export function exportNotes(book, highlights, opts = {}) {
+export async function exportNotes(book, highlights, opts = {}) {
   const md = notesToMarkdown(book, highlights, opts)
   const safe = String(book?.title ?? 'notes').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60)
   const filename = `${safe}-笔记-${stamp()}.md`
-  downloadBlob(new Blob([md], { type: 'text/markdown;charset=utf-8' }), filename)
+  await downloadBlob(new Blob([md], { type: 'text/markdown;charset=utf-8' }), filename)
   return { filename, count: highlights?.length ?? 0, bytes: md.length }
 }
 
@@ -294,12 +308,32 @@ export function parseBackup(text) {
   } catch {
     throw new Error('不是有效的 JSON 文件')
   }
-  if (!data || typeof data !== 'object') throw new Error('备份内容为空')
+  return validateBackup(data)
+}
+
+function validateBackup(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('备份内容为空')
   if (data.app !== BACKUP_APP) throw new Error('这不是阅读器导出的备份文件')
   if (!Array.isArray(data.books)) throw new Error('备份文件缺少 books 字段')
   if (data.schemaVersion > BACKUP_SCHEMA_VERSION) {
     throw new Error(`备份版本（${data.schemaVersion}）比当前版本新，请先更新应用`)
   }
+  const isRow = (row) => row && typeof row === 'object' && !Array.isArray(row)
+  const validId = (id) => Number.isSafeInteger(Number(id)) && Number(id) > 0
+  const ids = new Set()
+  for (const b of data.books) {
+    if (!isRow(b) || !validId(b.id) || ids.has(Number(b.id))) throw new Error('备份的书籍编号无效或重复')
+    ids.add(Number(b.id))
+    if (b.format && !['pdf', 'txt', 'epub'].includes(b.format)) throw new Error('备份含不支持的图书格式')
+    if (b.title != null && typeof b.title !== 'string') throw new Error('备份的书名无效')
+  }
+  for (const key of ['progress', 'highlights', 'bookmarks', 'files']) {
+    if (data[key] === undefined) continue // 兼容缺少可选字段的旧备份
+    if (!Array.isArray(data[key]) || data[key].some((row) => !isRow(row) || !validId(row.bookId))) {
+      throw new Error(`备份的 ${key} 字段无效`)
+    }
+  }
+  if ((data.files || []).some((f) => typeof f.data !== 'string')) throw new Error('备份的原文件数据无效')
   return data
 }
 
@@ -319,112 +353,122 @@ const bookmarkKey = (b) => `${b.bookId}|${b.page}|${b.charOffset ?? 0}`
  * - 已存在的高亮按位置去重，不产生重复
  */
 export async function restoreBackup(data) {
-  const report = {
-    addedBooks: 0,
-    mergedBooks: 0,
-    progress: 0,
-    highlights: 0,
-    skippedHighlights: 0,
-    bookmarks: 0,
-    files: 0,
-    orphanTitles: [],
-  }
+  validateBackup(data)
+  // 先解码文件，坏 base64 在任何数据库写入前报错。
+  const files = (data.files || []).map((f) => ({ ...f, blob: base64ToBlob(f.data, f.type) }))
+  return db.transaction('rw',
+    [db.books, db.blobs, db.progress, db.highlights, db.bookmarks], async () => {
+      const report = {
+        addedBooks: 0,
+        mergedBooks: 0,
+        progress: 0,
+        highlights: 0,
+        skippedHighlights: 0,
+        bookmarks: 0,
+        files: 0,
+        orphanTitles: [],
+      }
 
-  const localBooks = await db.books.toArray()
-  const byHash = new Map()
-  for (const b of localBooks) if (b.fileHash) byHash.set(b.fileHash, b)
+      const localBooks = await db.books.toArray()
+      const byHash = new Map()
+      for (const b of localBooks) if (b.fileHash) byHash.set(b.fileHash, b)
 
-  const fileBookIds = new Set((data.files || []).map((f) => Number(f.bookId)))
-  const idMap = new Map()
+      const fileBookIds = new Set((data.files || []).map((f) => Number(f.bookId)))
+      const idMap = new Map()
 
-  for (const b of data.books) {
-    let target = b.fileHash ? byHash.get(b.fileHash) : null
+      for (const b of data.books) {
+        let target = b.fileHash ? byHash.get(b.fileHash) : null
 
-    // 老备份（没有指纹）退化成「同 id 且同标题」判定，命中不了就当新书
-    if (!target && !b.fileHash) {
-      const same = await db.books.get(Number(b.id))
-      if (same && same.title === b.title) target = same
-    }
+        // 老备份（没有指纹）退化成「同 id 且同标题」判定，命中不了就当新书
+        if (!target && !b.fileHash) {
+          const same = await db.books.get(Number(b.id))
+          if (same && same.title === b.title) target = same
+        }
 
-    if (target) {
-      const patch = {}
-      if (b.cover && !target.cover) patch.cover = b.cover
-      if (b.fileHash && !target.fileHash) patch.fileHash = b.fileHash
-      if (b.fileName && !target.fileName) patch.fileName = b.fileName
-      if (b.pageCount && !target.pageCount) patch.pageCount = b.pageCount
-      if (Object.keys(patch).length) await db.books.update(target.id, patch)
-      report.mergedBooks++
-    } else {
-      const id = await db.books.add({
-        title: b.title || '未命名',
-        format: b.format || 'pdf',
-        pageCount: b.pageCount ?? 0,
-        cover: b.cover ?? null,
-        fileHash: b.fileHash ?? null,
-        fileName: b.fileName ?? null,
-        missingFile: !fileBookIds.has(Number(b.id)),
-        addedAt: b.addedAt ?? Date.now(),
-        lastReadAt: b.lastReadAt ?? Date.now(),
-      })
-      target = { id }
-      report.addedBooks++
-      if (!b.fileHash) report.orphanTitles.push(b.title || '未命名')
-    }
-    idMap.set(Number(b.id), target.id)
-  }
+        if (target) {
+          const patch = {}
+          if (b.cover && !target.cover) patch.cover = b.cover
+          if (b.author && !target.author) patch.author = b.author
+          if (b.fileHash && !target.fileHash) patch.fileHash = b.fileHash
+          if (b.fileName && !target.fileName) patch.fileName = b.fileName
+          if (b.pageCount && !target.pageCount) patch.pageCount = b.pageCount
+          if (Object.keys(patch).length) await db.books.update(target.id, patch)
+          report.mergedBooks++
+        } else {
+          const id = await db.books.add({
+            title: b.title || '未命名',
+            author: b.author || '',
+            format: b.format || 'pdf',
+            pageCount: b.pageCount ?? 0,
+            cover: b.cover ?? null,
+            fileHash: b.fileHash ?? null,
+            fileName: b.fileName ?? null,
+            missingFile: !fileBookIds.has(Number(b.id)),
+            addedAt: b.addedAt ?? Date.now(),
+            lastReadAt: b.lastReadAt ?? Date.now(),
+          })
+          target = { ...b, id }
+          if (b.fileHash) byHash.set(b.fileHash, target)
+          report.addedBooks++
+          if (!b.fileHash) report.orphanTitles.push(b.title || '未命名')
+        }
+        idMap.set(Number(b.id), target.id)
+      }
 
-  // 进度：同一本书谁的时间戳新用谁，避免把刚读的位置倒退回去。
-  // 例外：刚导入的书会带一条「没读过」的占位进度（started === false），
-  // 它的时间戳是最新的，但内容是空的，不能让它顶掉备份里真正读到的位置。
-  for (const p of data.progress || []) {
-    const bid = idMap.get(Number(p.bookId))
-    if (!bid) continue
-    const prev = await db.progress.get(bid)
-    const prevIsReal = prev && prev.started !== false
-    if (prevIsReal && (prev.updatedAt ?? 0) > (p.updatedAt ?? 0)) continue
-    await db.progress.put({ ...p, bookId: bid, started: true })
-    report.progress++
-  }
+      // 进度：同一本书谁的时间戳新用谁，避免把刚读的位置倒退回去。
+      // 例外：刚导入的书会带一条「没读过」的占位进度（started === false），
+      // 它的时间戳是最新的，但内容是空的，不能让它顶掉备份里真正读到的位置。
+      for (const p of data.progress || []) {
+        const bid = idMap.get(Number(p.bookId))
+        if (!bid) continue
+        const prev = await db.progress.get(bid)
+        const prevIsReal = prev && prev.started !== false
+        if (prevIsReal && p.started === false) continue
+        if (prevIsReal && (prev.updatedAt ?? 0) > (p.updatedAt ?? 0)) continue
+        await db.progress.put({ ...p, bookId: bid, started: p.started !== false })
+        report.progress++
+      }
 
-  // 高亮：按位置去重
-  const seen = new Set((await db.highlights.toArray()).map(markKey))
-  for (const h of data.highlights || []) {
-    const bid = idMap.get(Number(h.bookId))
-    if (!bid) continue
-    const row = { ...h, bookId: bid }
-    delete row.id
-    if (seen.has(markKey(row))) {
-      report.skippedHighlights++
-      continue
-    }
-    seen.add(markKey(row))
-    await db.highlights.add({ color: 'yellow', note: '', ...row })
-    report.highlights++
-  }
+      // 高亮：按位置去重
+      const seen = new Set((await db.highlights.toArray()).map(markKey))
+      for (const h of data.highlights || []) {
+        const bid = idMap.get(Number(h.bookId))
+        if (!bid) continue
+        const row = { ...h, bookId: bid }
+        delete row.id
+        if (seen.has(markKey(row))) {
+          report.skippedHighlights++
+          continue
+        }
+        seen.add(markKey(row))
+        await db.highlights.add({ color: 'yellow', note: '', ...row })
+        report.highlights++
+      }
 
-  // 书签：按「章/页 + 章内偏移」去重（同一章可以有多个书签）
-  const seenMarks = new Set((await db.bookmarks.toArray()).map(bookmarkKey))
-  for (const bm of data.bookmarks || []) {
-    const bid = idMap.get(Number(bm.bookId))
-    if (!bid) continue
-    const row = { ...bm, bookId: bid }
-    delete row.id
-    if (seenMarks.has(bookmarkKey(row))) continue
-    seenMarks.add(bookmarkKey(row))
-    await db.bookmarks.add(row)
-    report.bookmarks++
-  }
+      // 书签：按「章/页 + 章内偏移」去重（同一章可以有多个书签）
+      const seenMarks = new Set((await db.bookmarks.toArray()).map(bookmarkKey))
+      for (const bm of data.bookmarks || []) {
+        const bid = idMap.get(Number(bm.bookId))
+        if (!bid) continue
+        const row = { ...bm, bookId: bid }
+        delete row.id
+        if (seenMarks.has(bookmarkKey(row))) continue
+        seenMarks.add(bookmarkKey(row))
+        await db.bookmarks.add(row)
+        report.bookmarks++
+      }
 
-  // 原文件（备份里带了才恢复）
-  for (const f of data.files || []) {
-    const bid = idMap.get(Number(f.bookId))
-    if (!bid) continue
-    await db.blobs.put({ id: bid, blob: base64ToBlob(f.data, f.type) })
-    await db.books.update(bid, { missingFile: false })
-    report.files++
-  }
+      // 原文件（备份里带了才恢复）
+      for (const f of files) {
+        const bid = idMap.get(Number(f.bookId))
+        if (!bid) continue
+        await db.blobs.put({ id: bid, blob: f.blob })
+        await db.books.update(bid, { missingFile: false })
+        report.files++
+      }
 
-  return report
+      return report
+  })
 }
 
 export async function readBackupFile(file) {

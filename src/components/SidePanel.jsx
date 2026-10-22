@@ -277,6 +277,9 @@ export default function SidePanel({
                   <button
                     key={`${h.page}-${h.from}-${i}`}
                     className="hit-item"
+                    data-page={h.page}
+                    data-from={h.from}
+                    data-to={h.to}
                     onClick={() => onJumpHit(h)}
                   >
                     <span className="hit-pg">{label(h.page)}</span>

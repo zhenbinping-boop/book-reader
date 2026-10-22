@@ -1,0 +1,67 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><title>Modal back navigation regression</title></head>
+<body><div id="host"></div><pre id="log"></pre>
+<script type="module">
+import React, { useState } from 'react'
+import { createRoot } from 'react-dom/client'
+import { flushSync } from 'react-dom'
+import useBackClose from '/src/hooks/useBackClose.js'
+const log = (text) => {
+  document.querySelector('#log').textContent += text + '\n'
+  fetch('http://127.0.0.1:5178/log', { method: 'POST', body: text }).catch(() => {})
+}
+let failures = 0
+const check = (label, ok) => { if (!ok) failures++; log(`${ok ? 'ok  ' : 'BAD '}${label}`) }
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const until = async (fn) => {
+  for (let i=0;i<100;i++) { if (fn()) return true; await sleep(20) }
+  return false
+}
+let setDrawer, setMenu, closed = 0
+function Fixture() {
+  const [drawer, updateDrawer] = useState(false)
+  const [menu, updateMenu] = useState(false)
+  setDrawer = updateDrawer
+  setMenu = updateMenu
+  useBackClose(drawer, () => { closed++; updateDrawer(false) }, 'drawer')
+  useBackClose(menu, () => { closed++; updateMenu(false) }, 'menu')
+  return React.createElement('div', null,
+    drawer && React.createElement('span', { id: 'drawer' }, 'drawer'),
+    menu && React.createElement('span', { id: 'menu' }, 'menu'))
+}
+const root = createRoot(document.querySelector('#host'))
+try {
+  history.replaceState({ existing: 'preserved' }, '')
+  flushSync(() => root.render(React.createElement(Fixture)))
+  const base = location.href
+  flushSync(() => setDrawer(true))
+  check('打开抽屉登记返回历史', history.state.__backClose === 'drawer')
+  check('保留已有 history.state 字段', history.state.existing === 'preserved')
+  flushSync(() => setDrawer(false))
+  flushSync(() => setDrawer(true))
+  await sleep(150)
+  check('关闭后立刻重开不会被迟到的返回关闭', !!document.querySelector('#drawer') && closed === 0)
+  check('重开的抽屉有自己的历史', history.state.__backClose === 'drawer')
+  history.back()
+  check('系统返回只关闭当前抽屉', await until(() => !document.querySelector('#drawer')) && closed === 1)
+  check('返回浮层不改变阅读路由', location.href === base)
+
+  flushSync(() => setDrawer(true))
+  flushSync(() => { setDrawer(false); setMenu(true) })
+  await sleep(150)
+  check('关闭抽屉后立刻开菜单不会误关菜单', !!document.querySelector('#menu') && closed === 1)
+  check('切换后登记菜单历史', history.state.__backClose === 'menu')
+  history.back()
+  check('系统返回关闭新菜单', await until(() => !document.querySelector('#menu')) && closed === 2)
+
+  flushSync(() => setDrawer(true))
+  flushSync(() => setDrawer(false))
+  flushSync(() => setMenu(true))
+  flushSync(() => setMenu(false))
+  await sleep(150)
+  check('等待历史清理时取消打开不留下虚假菜单历史', !history.state?.__backClose)
+  check('取消打开不额外触发关闭回调', closed === 2)
+  log(failures ? `RESULT: FAIL (${failures})` : 'RESULT: PASS')
+} catch (error) { log('THROWN: ' + (error.stack || error)) }
+finally { root.unmount() }
+log('ALL DONE')
+</script></body></html>

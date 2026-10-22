@@ -2,7 +2,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   db,
   getBlob,
-  saveProgress,
   listHighlights,
   addHighlight,
   updateHighlight,
@@ -20,13 +19,15 @@ import {
   searchChapters,
   chapterPercent,
 } from '../lib/txtText'
-import { firstSegOnPage, pageOfSegment, selectionOffsets, splitByMarks } from '../lib/txtSel'
+import { firstSegOnPage, pageOfCharacter, selectionOffsets, splitByMarks, intraOffsetAtTop, intraOffsetAtColumn, scrollSegToChar } from '../lib/txtSel'
 import { exportNotes } from '../lib/backup'
 import useHistoryStack from '../hooks/useHistoryStack'
 import useWakeLock from '../hooks/useWakeLock'
 import useImmersive from '../hooks/useImmersive'
 import usePinch, { applyPinchFx } from '../hooks/usePinch'
 import useBackClose from '../hooks/useBackClose'
+import useReaderGesture from '../hooks/useReaderGesture'
+import useProgressCheckpoint from '../hooks/useProgressCheckpoint'
 import SidePanel from './SidePanel'
 import SelectionPopover from './SelectionPopover'
 import AppearancePanel from './AppearancePanel'
@@ -94,10 +95,7 @@ export default function TxtReader({ bookId, title, onBack }) {
   useBackClose(drawer, () => setDrawer(false), 'drawer')
   useBackClose(appearance, () => setAppearance(false), 'appearance')
   useBackClose(menu, () => setMenu(false), 'menu')
-  useBackClose(!!popover, () => {
-    popoverRef.current = null
-    setPopover(null)
-  }, 'popover')
+  useBackClose(!!popover, () => dismissPopover(), 'popover')
 
   useEffect(() => {
     applyThemeColor(theme)
@@ -112,20 +110,19 @@ export default function TxtReader({ bookId, title, onBack }) {
   const pagesRef = useRef(1)
   const highlightsRef = useRef([])
   const rafRef = useRef(0)
-  const saveTimer = useRef(0)
-  const pendingRef = useRef(null)
   // 排版变化（换字号 / 旋屏 / 换章）后要回到的字符锚点
   const pendingAnchorRef = useRef(null)
   const pendingEndRef = useRef(false)
   // 当前页最上面那段文字在章内的偏移 —— 也就是下次打开要回到的地方
   const anchorRef = useRef(0)
+  const checkpointRef = useRef(null)
   const jumpRef = useRef(null)
   const restoredRef = useRef(false)
   const popoverRef = useRef(null)
+  const gestureRef = useRef(null)
   // 弹窗刚被「点空白关掉」的时间戳：pointerup 的定时器会立刻再跑一次
   // openForSelection，若此刻原生选区还在就会把弹窗又弹出来。350ms 内不再重开。
   const dismissAtRef = useRef(0)
-  const touchRef = useRef(null)
   const prefsRef = useRef(loadPrefs())
   /** 版式也留一份 ref：滚动 / 翻页的分支都在回调里，不该把它们变成依赖（会重建一堆 useCallback） */
   const flowRef = useRef(loadPrefs().readerFlow)
@@ -294,7 +291,10 @@ export default function TxtReader({ bookId, title, onBack }) {
   /** 章内字符偏移 → 滚到那一段（滚动模式的「跳转」） */
   const scrollToOffset = useCallback(
     (charOffset, list) => {
-      scrollToSeg(segmentAt(list, (chap?.start ?? 0) + Math.max(0, charOffset || 0)))
+      const absolute = (chap?.start ?? 0) + Math.max(0, charOffset || 0)
+      const idx = segmentAt(list, absolute)
+      scrollToSeg(idx)
+      if (idx >= 0) scrollSegToChar(colRef.current?.children?.[idx], absolute - list[idx].start, vpRef.current)
     },
     [chap, scrollToSeg]
   )
@@ -308,7 +308,7 @@ export default function TxtReader({ bookId, title, onBack }) {
       // 书签与后退栈的判据是「目标单位 == 当前单位」，把单位从「栏」换成「段」即可，
       // 判据本身不用动 —— 与分页模式是同一条（见 MEMORY 的「锚点落在当前显示的栏里」）。
       if (flowRef.current === 'scroll') return segIdx
-      const p = pageOfSegment(colRef.current, segIdx, geo())
+      const p = pageOfCharacter(colRef.current, segIdx, Math.max(0, (chap?.start ?? 0) + charOffset - list[segIdx].start), geo())
       return p < 0 ? 0 : p
     },
     [chap, geo]
@@ -333,6 +333,7 @@ export default function TxtReader({ bookId, title, onBack }) {
     // 上一章的偏移混着新章号写进进度
     anchorRef.current = Math.max(0, charOffset || 0)
     updateFinePct()
+    chapterRef.current = t
     pendingEndRef.current = atEnd
     // 用户已经主动翻过页，之后的页码变化都可以记账了
     restoredRef.current = true
@@ -585,18 +586,33 @@ export default function TxtReader({ bookId, title, onBack }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, colW, colH, paras, appearanceKey, chapter, jumpSeq, scrollToPage, flow, scrollToOffset])
 
-  // 当前页最上面那段文字 = 位置锚点（换字号、旋屏、下次打开都靠它）
-  useEffect(() => {
-    if (phase !== 'ready' || !paras.length) return
-    const seg = flow === 'scroll' ? topSegInFlow() : firstSegOnPage(colRef.current, page, geo())
+  // 在滚动事件和最终保存时现读位置，同一长段内滚动也必须更新字符锚点。
+  const syncAnchorFromScroll = useCallback((schedule = true) => {
+    const vp = vpRef.current
+    const cols = colRef.current
+    if (!vp?.isConnected || !cols || !restoredRef.current || pendingAnchorRef.current || jumpRef.current) return
+    if (Number(cols.dataset.chapter) !== chapterRef.current) return
+    const c = docRef.current?.chapters?.[chapterRef.current]
+    if (!c) return
+    const scrolling = flowRef.current === 'scroll'
+    const livePage = Math.max(0, Math.round(vp.scrollLeft / (boxRef.current.w + GAP)))
+    const seg = scrolling ? topSegInFlow() : firstSegOnPage(cols, livePage, geo())
     if (!seg?.el) return
-    const abs = Number(seg.el.dataset.start)
-    if (Number.isFinite(abs)) anchorRef.current = Math.max(0, abs - (chap?.start ?? 0))
-    // page 变化即刷新全书百分比（翻页 smooth 滚动 / 滚动模式都会驱动 page）
+    const intra = scrolling ? intraOffsetAtTop(seg.el, vp) : intraOffsetAtColumn(seg.el, vp)
+    const off = Math.max(0, Number(seg.el.dataset.start) + intra - c.start)
+    if (!Number.isFinite(off)) return
+    if (off === anchorRef.current) { updateFinePct(); return }
+    anchorRef.current = off
     updateFinePct()
-  }, [page, phase, paras, chap, colW, colH, geo, flow, topSegInFlow, updateFinePct])
+    if (schedule) checkpointRef.current?.schedule()
+  }, [geo, topSegInFlow, updateFinePct])
+
+  useEffect(() => {
+    if (phase === 'ready') syncAnchorFromScroll()
+  }, [page, phase, paras, colW, colH, syncAnchorFromScroll])
 
   const onScroll = useCallback(() => {
+    syncAnchorFromScroll()
     if (rafRef.current) return
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = 0
@@ -613,47 +629,24 @@ export default function TxtReader({ bookId, title, onBack }) {
       const p = Math.round(vp.scrollLeft / (w + GAP))
       setPage((prev) => (prev === p ? prev : p))
     })
-  }, [topSegInFlow])
+  }, [topSegInFlow, syncAnchorFromScroll])
 
   /* ---------------- 进度写回 ---------------- */
 
-  useEffect(() => {
-    if (phase !== 'ready' || !restoredRef.current) return
-    pendingRef.current = {
-      chapterIndex: chapter,
-      charOffset: anchorRef.current,
-      // 书架按 page / pageCount 算百分比，这里让 page 表示「第几章」
-      page: chapter + 1,
-      mode: 'page',
-    }
-    clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => {
-      const patch = pendingRef.current
-      pendingRef.current = null
-      if (patch) saveProgress(bookId, patch)
-    }, 600)
-  }, [chapter, page, phase, bookId])
+  const checkpoint = useProgressCheckpoint(bookId, () => {
+    if (phase !== 'ready' || !restoredRef.current) return null
+    syncAnchorFromScroll(false)
+    return { chapterIndex: chapterRef.current, charOffset: anchorRef.current,
+      page: chapterRef.current + 1, mode: 'page' }
+  }, (error) => {
+    console.error('[book-reader] 进度保存失败', error)
+    setToast('阅读进度未能保存，请检查设备存储空间')
+  })
+  checkpointRef.current = checkpoint
 
-  // 兜底写出：离开阅读器、页面转后台 / 关闭时立刻补写。
-  // 只依赖 bookId，所以 cleanup 只在真正卸载时跑 —— 与 PdfReader 同一个坑的同一套解法。
   useEffect(() => {
-    const flush = () => {
-      const patch = pendingRef.current
-      if (!patch) return
-      pendingRef.current = null
-      saveProgress(bookId, patch)
-    }
-    const onHide = () => {
-      if (document.visibilityState === 'hidden') flush()
-    }
-    window.addEventListener('pagehide', flush)
-    document.addEventListener('visibilitychange', onHide)
-    return () => {
-      window.removeEventListener('pagehide', flush)
-      document.removeEventListener('visibilitychange', onHide)
-      flush()
-    }
-  }, [bookId])
+    if (phase === 'ready' && restoredRef.current) checkpoint.schedule()
+  }, [chapter, page, phase, checkpoint])
 
   /* ---------------- 外观设置 ---------------- */
 
@@ -722,6 +715,14 @@ export default function TxtReader({ bookId, title, onBack }) {
     min: 8,
     max: 60,
   })
+
+  const readerGesture = useReaderGesture({
+    mode: flow, shouldIgnoreSwipe,
+    blocked: () => phase !== 'ready' || drawer || appearance || menu || !!popoverRef.current,
+    next: nextPage, previous: prevPage,
+  })
+
+  gestureRef.current = readerGesture
 
   const menuRows = [
     {
@@ -805,7 +806,7 @@ export default function TxtReader({ bookId, title, onBack }) {
    * 和底栏「‹ ›」按钮 —— 点屏幕只干一件事（DESIGN.md §15.8）。
    */
   const onStageClick = useCallback(() => {
-    if (popoverRef.current) return
+    if (gestureRef.current?.shouldIgnoreClick() || popoverRef.current) return
     const sel = window.getSelection()
     if (sel && !sel.isCollapsed) return
     setUi((v) => !v)
@@ -851,7 +852,10 @@ export default function TxtReader({ bookId, title, onBack }) {
     const cols = colRef.current
     if (!cols || !chap) return
     const data = selectionOffsets(cols)
-    if (!data) return
+    if (!data) {
+      if (popoverRef.current?.mode === 'new') closePopover()
+      return
+    }
     const next = {
       mode: 'new',
       from: Math.max(0, data.from - chap.start),
@@ -861,17 +865,19 @@ export default function TxtReader({ bookId, title, onBack }) {
     }
     popoverRef.current = next
     setPopover(next)
-  }, [chap])
+  }, [chap, closePopover])
 
   useEffect(() => {
     let down = false
     let timer = 0
-    const onDown = () => {
+    const onDown = (event) => {
       down = true
+      clearTimeout(timer)
     }
-    const onUp = () => {
+    const onUp = (event) => {
       down = false
       clearTimeout(timer)
+      if (event.target.closest?.('.popover')) return
       timer = setTimeout(openForSelection, 60)
     }
     const onSelChange = () => {
@@ -881,11 +887,13 @@ export default function TxtReader({ bookId, title, onBack }) {
     }
     document.addEventListener('pointerdown', onDown, true)
     document.addEventListener('pointerup', onUp, true)
+    document.addEventListener('pointercancel', onUp, true)
     document.addEventListener('selectionchange', onSelChange)
     return () => {
       clearTimeout(timer)
       document.removeEventListener('pointerdown', onDown, true)
       document.removeEventListener('pointerup', onUp, true)
+      document.removeEventListener('pointercancel', onUp, true)
       document.removeEventListener('selectionchange', onSelChange)
     }
   }, [openForSelection])
@@ -904,8 +912,14 @@ export default function TxtReader({ bookId, title, onBack }) {
 
   const pickColor = useCallback(
     async (color) => {
-      const p = popoverRef.current
+      let p = popoverRef.current
       if (!p) return
+      if (!p.existing) {
+        const latest = selectionOffsets(colRef.current)
+        if (!latest) { dismissPopover(); return }
+        const base = docRef.current?.chapters?.[chapterRef.current]?.start ?? 0
+        p = { ...p, from: Math.max(0, latest.from - base), to: Math.max(0, latest.to - base), text: latest.text }
+      }
       try {
         if (p.existing) {
           await updateHighlight(p.existing.id, { color })
@@ -924,11 +938,13 @@ export default function TxtReader({ bookId, title, onBack }) {
         await reloadHighlights()
       } catch (err) {
         console.error('[book-reader] 保存高亮失败', err)
+        setToast('高亮未能保存，请检查设备存储空间')
+        return
       }
       clearNativeSelection()
       closePopover()
     },
-    [bookId, closePopover, reloadHighlights]
+    [bookId, closePopover, dismissPopover, reloadHighlights]
   )
 
   const removeMark = useCallback(
@@ -975,9 +991,9 @@ export default function TxtReader({ bookId, title, onBack }) {
 
   /* ---------------- 笔记导出 / 搜索 ---------------- */
 
-  const onExportNotes = useCallback(() => {
+  const onExportNotes = useCallback(async () => {
     try {
-      const r = exportNotes({ title }, highlights, { unit: '章', bookmarks })
+      const r = await exportNotes({ title }, highlights, { unit: '章', bookmarks })
       setToast(
         r.count ? `已导出 ${r.count} 条笔记：${r.filename}` : '这本书还没有笔记，已导出空文件'
       )
@@ -1071,6 +1087,7 @@ export default function TxtReader({ bookId, title, onBack }) {
         className="txt-stage"
         onClick={onStageClick}
         onContextMenu={(e) => {
+          gestureRef.current?.cancel()
           if (!COARSE_POINTER) e.preventDefault()
         }}
       >
@@ -1078,57 +1095,12 @@ export default function TxtReader({ bookId, title, onBack }) {
           className={`txt-viewport${flow === 'scroll' ? ' scroll-flow' : ''}`}
           ref={vpRef}
           onScroll={onScroll}
-          onTouchStart={(e) => {
-            // 双指落下时不要用它当「滑动起点」：两指的起点终点混在一起会算出一个
-            // 巨大的位移，松手时被当成翻页
-            if (e.touches.length > 1) {
-              touchRef.current = null
-              return
-            }
-            const t = e.touches[0]
-            touchRef.current = { x: t.clientX, y: t.clientY }
-          }}
-          onTouchMove={(e) => {
-            // 滚动模式：滚到底（到顶）之后**继续**滑 → 换节。
-            // 「只在当前节内滚动」需要一个自然的出口，否则读完本节就卡住了。
-            // 判据取「已经在边界上 + 手指还往边界外推」，所以正常浏览永远不会误触发。
-            if (flowRef.current !== 'scroll') return
-            const start = touchRef.current
-            const vp = vpRef.current
-            if (!start || !vp || e.touches.length > 1) return
-            const max = Math.max(0, vp.scrollHeight - vp.clientHeight)
-            const dy = e.touches[0].clientY - start.y
-            if (vp.scrollTop >= max - 2 && dy < -80) {
-              touchRef.current = null // 一次滑动只换一节，免得连跳
-              nextPage()
-            } else if (vp.scrollTop <= 2 && dy > 80) {
-              touchRef.current = null
-              prevPage()
-            }
-          }}
-          onTouchEnd={(e) => {
-            const start = touchRef.current
-            touchRef.current = null
-            if (!start) return
-            // 刚做完双指缩放：`changedTouches[0]` 的位移可能远超 50px，别误判成翻页
-            if (shouldIgnoreSwipe()) return
-            // 滚动模式下上下滑就是浏览本身，横向轻滑不该被当成「滚一屏」翻页
-            if (flowRef.current === 'scroll') return
-            // 用户在长按选词或拖拽调整选区时，位移易超阈值，不能误判成翻页
-            const sel = window.getSelection()
-            if (sel && !sel.isCollapsed && sel.toString().trim()) return
-            const t = e.changedTouches[0]
-            const dx = t.clientX - start.x
-            const dy = t.clientY - start.y
-            if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) {
-              if (dx < 0) nextPage()
-              else prevPage()
-            }
-          }}
+          {...readerGesture.handlers}
         >
           <div
             className={`txt-columns${flow === 'scroll' ? ' scroll-flow' : ''}`}
             ref={setCols}
+            data-chapter={chapter}
             style={
               flow === 'scroll'
                 ? undefined

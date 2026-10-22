@@ -248,7 +248,7 @@
         await db.delete()
         await db.open()
         const asFile = async (name, url, type) => new File([await (await fetch(url)).arrayBuffer()], name, { type })
-        const txtFile = await asFile('sample-utf8.txt', '/@fs/D:/book-reader/samples/sample-utf8.txt', 'text/plain')
+        const txtFile = await asFile('sample-utf8.txt', '/samples/sample-utf8.txt', 'text/plain')
         const rt = await importFile(txtFile)
         assertEq('TXT 导入', rt.format, 'txt')
         assertEq('TXT 记了 5 章', rt.chapters, 5)
@@ -351,7 +351,7 @@
         /* ================= 6. EPUB 阅读器：同样的链路 ================= */
         await db.delete()
         await db.open()
-        const epubFile = await asFile('sample.epub', '/@fs/D:/book-reader/samples/sample.epub', 'application/epub+zip')
+        const epubFile = await asFile('sample.epub', '/samples/sample.epub', 'application/epub+zip')
         const re = await importFile(epubFile)
         assertEq('EPUB 导入', re.format, 'epub')
         assertEq('EPUB 5 节', re.chapters, 5)
@@ -418,7 +418,7 @@
         /* ================= 7. PDF 阅读器：只记页号 ================= */
         await db.delete()
         await db.open()
-        const pdfFile = await asFile('sample.pdf', '/@fs/D:/book-reader/samples/sample.pdf', 'application/pdf')
+        const pdfFile = await asFile('sample.pdf', '/samples/sample.pdf', 'application/pdf')
         const rp = await importFile(pdfFile)
         assertEq('PDF 导入', rp.format, 'pdf')
         assertEq('PDF 页数落库', (await getBook(rp.id)).pageCount, 6)

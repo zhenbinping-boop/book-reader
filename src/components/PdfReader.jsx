@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { openPdf, getPageSizes, buildOutline, extractText } from '../pdf/pdfService'
 import {
   db,
   getBlob,
-  saveProgress,
   listHighlights,
   addHighlight,
   updateHighlight,
@@ -22,6 +21,9 @@ import useWakeLock from '../hooks/useWakeLock'
 import useImmersive from '../hooks/useImmersive'
 import usePinch, { applyPinchFx } from '../hooks/usePinch'
 import useBackClose from '../hooks/useBackClose'
+import useReaderGesture from '../hooks/useReaderGesture'
+import useProgressCheckpoint from '../hooks/useProgressCheckpoint'
+import { readPdfPosition, pdfScrollTop } from '../lib/pdfPosition'
 import PdfPage from './PdfPage'
 import SidePanel from './SidePanel'
 import SelectionPopover from './SelectionPopover'
@@ -63,10 +65,6 @@ export default function PdfReader({ bookId, title, onBack }) {
 
   useBackClose(drawer, () => setDrawer(false), 'drawer')
   useBackClose(menu, () => setMenu(false), 'menu')
-  useBackClose(!!popover, () => {
-    popoverRef.current = null
-    setPopover(null)
-  }, 'popover')
 
   useEffect(() => {
     applyThemeColor(theme)
@@ -76,6 +74,8 @@ export default function PdfReader({ bookId, title, onBack }) {
   const [highlights, setHighlights] = useState([])
   const [popover, setPopover] = useState(null)
   const popoverRef = useRef(null)
+
+  useBackClose(!!popover, () => dismissPopover(), 'popover')
 
   // ---- 书签 ----
   const [bookmarks, setBookmarks] = useState([])
@@ -96,13 +96,13 @@ export default function PdfReader({ bookId, title, onBack }) {
   const rafRef = useRef(0)
   const jumpRef = useRef(null)
   const didJump = useRef(false)
-  const saveTimer = useRef(0)
   // 最新但还没落盘的进度。离开阅读器 / 页面转后台时靠它兜底补写
-  const pendingRef = useRef(null)
   // 首次恢复跳转是否已完成。完成前不许写回，否则会拿初始的 page=1 覆盖已存进度
   const restoredRef = useRef(false)
-  const touchRef = useRef(null)
   const offsetsRef = useRef([])
+  const geometryRef = useRef(null)
+  const positionRef = useRef({ scrollPage: 1, pageOffset: 0 })
+  const checkpointRef = useRef(null)
   // 手势中的临时缩放挂在这一层（整个内容块）。它的尺寸随缩放变，所以
   // transform-origin 必须按当前视口算 —— 见 usePinch 的 applyPinchFx
   const pagesRef = useRef(null)
@@ -143,6 +143,7 @@ export default function PdfReader({ bookId, title, onBack }) {
         const saved = await db.progress.get(bookId)
         if (!alive) return
         if (saved?.page) jumpRef.current = saved.page
+        positionRef.current = { scrollPage: saved?.scrollPage ?? saved?.page ?? 1, pageOffset: saved?.pageOffset ?? 0 }
         if (saved?.mode) setMode(saved.mode)
         if (saved?.zoom) setZoom(saved.zoom)
 
@@ -210,10 +211,13 @@ export default function PdfReader({ bookId, title, onBack }) {
   }, [sizes, scale])
 
   offsetsRef.current = offsets
+  geometryRef.current = { offsets, sizes, scale }
 
   // ---- 跳转 ----
   const goTo = useCallback((page) => {
     const target = Math.min(Math.max(1, Math.round(page)), nPagesRef.current)
+    currentRef.current = target
+    positionRef.current = { scrollPage: target, pageOffset: 0 }
     setCurrent(target)
     if (modeRef.current === 'scroll') {
       const off = offsetsRef.current[target - 1]
@@ -309,30 +313,27 @@ export default function PdfReader({ bookId, title, onBack }) {
     [reloadBookmarks]
   )
 
-  useEffect(() => {
-    if (phase !== 'ready' || didJump.current) return
-    if (!offsets.length || !viewBox.w) return
-    didJump.current = true
-    // 标记恢复完成，之后的 current 变化才允许写回进度
+  useLayoutEffect(() => {
+    if (phase !== 'ready' || !offsets.length || !viewBox.w) return
+    if (!didJump.current) {
+      didJump.current = true
+      currentRef.current = jumpRef.current ?? 1
+      setCurrent(currentRef.current)
+    }
+    if (mode === 'scroll' && viewRef.current) {
+      viewRef.current.scrollTop = pdfScrollTop(positionRef.current, offsets, sizes, scale)
+    } else if (mode === 'page') {
+      positionRef.current = { scrollPage: currentRef.current, pageOffset: 0 }
+    }
     restoredRef.current = true
-    requestAnimationFrame(() => goTo(jumpRef.current ?? 1))
-  }, [phase, offsets, viewBox.w, goTo])
+  }, [phase, mode, offsets, sizes, scale, viewBox.w])
 
-  // 切换回连续模式时把滚动位置对齐到当前页
-  useEffect(() => {
-    if (phase !== 'ready' || mode !== 'scroll') return
-    const off = offsetsRef.current[currentRef.current - 1]
-    if (off != null && viewRef.current) viewRef.current.scrollTop = off
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode])
-
-  // 缩放变化后保持当前页不动
-  useEffect(() => {
-    if (phase !== 'ready' || mode !== 'scroll') return
-    const off = offsetsRef.current[currentRef.current - 1]
-    if (off != null && viewRef.current) viewRef.current.scrollTop = off
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scale])
+  const samplePosition = useCallback(() => {
+    const view = viewRef.current
+    const geometry = geometryRef.current
+    if (!restoredRef.current || !view?.isConnected || modeRef.current !== 'scroll' || !geometry?.offsets.length) return
+    positionRef.current = readPdfPosition(geometry.offsets, geometry.sizes, geometry.scale, view.scrollTop)
+  }, [])
 
   // ---- 滚动时更新页码 ----
   const computeCurrent = useCallback(() => {
@@ -352,16 +353,19 @@ export default function PdfReader({ bookId, title, onBack }) {
         hi = mid - 1
       }
     }
+    currentRef.current = ans + 1
     setCurrent(ans + 1)
   }, [])
 
   const onScroll = useCallback(() => {
+    samplePosition()
+    checkpointRef.current?.schedule()
     if (rafRef.current) return
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = 0
       computeCurrent()
     })
-  }, [computeCurrent])
+  }, [computeCurrent, samplePosition])
 
   // ---- 可见页追踪：只渲染视口附近的页，控制内存 ----
   useEffect(() => {
@@ -400,46 +404,19 @@ export default function PdfReader({ bookId, title, onBack }) {
     if (mode === 'page') setVisible(new Set())
   }, [mode])
 
-  // ---- 进度写回 ----
-  // 防抖 600ms：连续滚动时不会每帧都写一次 IndexedDB。
+  // ---- 进度写回：同页滚动也存位置，退出时现读几何 ----
+  const checkpoint = useProgressCheckpoint(bookId, () => {
+    if (phase !== 'ready' || !restoredRef.current) return null
+    samplePosition()
+    return { page: currentRef.current, mode: modeRef.current, zoom: zoomRef.current, ...positionRef.current }
+  }, (error) => {
+    console.error('[book-reader] 进度保存失败', error)
+    setToast('阅读进度未能保存，请检查设备存储空间')
+  })
+  checkpointRef.current = checkpoint
   useEffect(() => {
-    if (phase !== 'ready') return
-    // 恢复跳转完成前不写回。此刻 current 还是初始值 1，
-    // 抢在恢复前落盘就会把「上次读到第几页」覆盖成第 1 页。
-    if (!restoredRef.current) return
-    pendingRef.current = { page: current, mode, zoom }
-    clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => {
-      const patch = pendingRef.current
-      pendingRef.current = null
-      if (patch) saveProgress(bookId, patch)
-    }, 600)
-  }, [current, mode, zoom, phase, bookId])
-
-  // 兜底写出：离开阅读器、或页面被切到后台/关闭时立刻补写一次。
-  //
-  // 这个 effect 只依赖 bookId，所以它的 cleanup 只在真正卸载时执行 ——
-  // 不会像上面的防抖那样，被每次翻页引起的依赖变化提前 clearTimeout 掉
-  // （那正是「滚动后立刻返回，位置没记住」的原因）。
-  useEffect(() => {
-    const flush = () => {
-      const patch = pendingRef.current
-      if (!patch) return
-      pendingRef.current = null
-      saveProgress(bookId, patch)
-    }
-    const onHide = () => {
-      // 手机上切走 App 时，pagehide 不一定触发，visibilitychange 更可靠
-      if (document.visibilityState === 'hidden') flush()
-    }
-    window.addEventListener('pagehide', flush)
-    document.addEventListener('visibilitychange', onHide)
-    return () => {
-      window.removeEventListener('pagehide', flush)
-      document.removeEventListener('visibilitychange', onHide)
-      flush()
-    }
-  }, [bookId])
+    if (phase === 'ready' && restoredRef.current) checkpoint.schedule()
+  }, [current, mode, zoom, phase, checkpoint])
 
   /* ---------------- 沉浸 / 常亮 / 双指缩放 ---------------- */
 
@@ -472,6 +449,13 @@ export default function PdfReader({ bookId, title, onBack }) {
     commit: commitPinchZoom,
     min: ZOOM_MIN,
     max: ZOOM_MAX,
+  })
+
+  const readerGesture = useReaderGesture({
+    mode, shouldIgnoreSwipe,
+    blocked: () => phase !== 'ready' || drawer || menu || !!popoverRef.current,
+    next: () => goTo(currentRef.current + 1),
+    previous: () => goTo(currentRef.current - 1),
   })
 
   const menuRows = [
@@ -561,9 +545,17 @@ export default function PdfReader({ bookId, title, onBack }) {
     return () => window.removeEventListener('keydown', onKey, true)
   }, [closePopover])
 
+  const dismissPopover = useCallback(() => {
+    window.getSelection()?.removeAllRanges()
+    closePopover()
+  }, [closePopover])
+
   const openForSelection = useCallback(() => {
     const sel = window.getSelection()
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+      if (popoverRef.current?.mode === 'new') closePopover()
+      return
+    }
     for (const el of layersRef.current.values()) {
       if (!el.contains(sel.anchorNode)) continue
       const data = readSelection(el)
@@ -573,19 +565,21 @@ export default function PdfReader({ bookId, title, onBack }) {
       setPopover(next)
       return
     }
-  }, [])
+  }, [closePopover])
 
   // 统一用「指针按下状态 + selectionchange」判断，鼠标与触屏长按都能覆盖。
   // 只监听 mouseup 在移动端会漏（长按后拖动选择手柄不会再触发 touchend）。
   useEffect(() => {
     let down = false
     let timer = 0
-    const onDown = () => {
+    const onDown = (event) => {
       down = true
+      clearTimeout(timer)
     }
-    const onUp = () => {
+    const onUp = (event) => {
       down = false
       clearTimeout(timer)
+      if (event.target.closest?.('.popover')) return
       timer = setTimeout(openForSelection, 60)
     }
     const onSelChange = () => {
@@ -595,11 +589,13 @@ export default function PdfReader({ bookId, title, onBack }) {
     }
     document.addEventListener('pointerdown', onDown, true)
     document.addEventListener('pointerup', onUp, true)
+    document.addEventListener('pointercancel', onUp, true)
     document.addEventListener('selectionchange', onSelChange)
     return () => {
       clearTimeout(timer)
       document.removeEventListener('pointerdown', onDown, true)
       document.removeEventListener('pointerup', onUp, true)
+      document.removeEventListener('pointercancel', onUp, true)
       document.removeEventListener('selectionchange', onSelChange)
     }
   }, [openForSelection])
@@ -626,8 +622,15 @@ export default function PdfReader({ bookId, title, onBack }) {
 
   const pickColor = useCallback(
     async (color) => {
-      const p = popoverRef.current
+      let p = popoverRef.current
       if (!p) return
+      if (p.mode === 'new') {
+        const selection = window.getSelection()
+        const layer = [...layersRef.current.values()].find((el) => el.contains(selection?.anchorNode))
+        const latest = layer ? readSelection(layer) : null
+        if (!latest) { dismissPopover(); return }
+        p = { ...p, ...latest }
+      }
       try {
         if (p.mode === 'edit') {
           await updateHighlight(p.existing.id, { color })
@@ -645,11 +648,13 @@ export default function PdfReader({ bookId, title, onBack }) {
       } catch (err) {
         // 保存失败必须留下痕迹，否则用户会以为高亮成功了
         console.error('[book-reader] 保存高亮失败', err)
+        setToast('高亮未能保存，请检查设备存储空间')
+        return
       }
       clearNativeSelection()
       closePopover()
     },
-    [bookId, closePopover, reloadHighlights]
+    [bookId, closePopover, dismissPopover, reloadHighlights]
   )
 
   const removeMark = useCallback(
@@ -708,9 +713,9 @@ export default function PdfReader({ bookId, title, onBack }) {
 
   /* ---------------- 笔记导出 ---------------- */
 
-  const onExportNotes = useCallback(() => {
+  const onExportNotes = useCallback(async () => {
     try {
-      const r = exportNotes({ title }, highlights, { bookmarks })
+      const r = await exportNotes({ title }, highlights, { bookmarks })
       setToast(
         r.count ? `已导出 ${r.count} 条笔记：${r.filename}` : '这本书还没有笔记，已导出空文件'
       )
@@ -782,37 +787,12 @@ export default function PdfReader({ bookId, title, onBack }) {
         ref={viewRef}
         onScroll={mode === 'scroll' ? onScroll : undefined}
         onClick={() => {
-          if (popoverRef.current) return
+          if (readerGesture.shouldIgnoreClick() || popoverRef.current) return
           const sel = window.getSelection()
           if (sel && !sel.isCollapsed) return
           setUi((v) => !v)
         }}
-        onTouchStart={(e) => {
-          // 双指落下时不要用它当「滑动起点」：两指的起点终点混在一起会算出一个
-          // 巨大的位移，松手时被当成翻页
-          if (e.touches.length > 1) {
-            touchRef.current = null
-            return
-          }
-          const t = e.touches[0]
-          touchRef.current = { x: t.clientX, y: t.clientY }
-        }}
-        onTouchEnd={(e) => {
-          const start = touchRef.current
-          touchRef.current = null
-          if (!start || mode !== 'page') return
-          // 刚做完双指缩放：`changedTouches[0]` 的位移可能远超 50px，别误判成翻页
-          if (shouldIgnoreSwipe()) return
-          // 用户在长按选词或拖拽调整选区时，位移易超阈值，不能误判成翻页
-          const sel = window.getSelection()
-          if (sel && !sel.isCollapsed && sel.toString().trim()) return
-          const t = e.changedTouches[0]
-          const dx = t.clientX - start.x
-          const dy = t.clientY - start.y
-          if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) {
-            goTo(currentRef.current + (dx < 0 ? 1 : -1))
-          }
-        }}
+        {...readerGesture.handlers}
       >
         <div
           className="pages"
@@ -933,7 +913,7 @@ export default function PdfReader({ bookId, title, onBack }) {
           onPick={pickColor}
           onDelete={removeMark}
           onCopy={copyMarkText}
-          onClose={closePopover}
+          onClose={dismissPopover}
         />
       )}
 

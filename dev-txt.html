@@ -69,8 +69,8 @@
         log('db cleared')
 
         /* ---------- 1. 解码：UTF-8 与 GB18030 ---------- */
-        const utf8Bytes = new Uint8Array(await (await fetch('/@fs/D:/book-reader/samples/sample-utf8.txt')).arrayBuffer())
-        const gbkBytes = new Uint8Array(await (await fetch('/@fs/D:/book-reader/samples/sample-gbk.txt')).arrayBuffer())
+        const utf8Bytes = new Uint8Array(await (await fetch('/samples/sample-utf8.txt')).arrayBuffer())
+        const gbkBytes = new Uint8Array(await (await fetch('/samples/sample-gbk.txt')).arrayBuffer())
         log('sample bytes: utf8=' + utf8Bytes.length + ' gbk=' + gbkBytes.length)
 
         const du = T.decodeBytes(utf8Bytes)

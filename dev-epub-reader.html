@@ -70,7 +70,7 @@
         await db.open()
         log('db cleared')
 
-        const bytes = new Uint8Array(await (await fetch('/@fs/D:/book-reader/samples/sample.epub')).arrayBuffer())
+        const bytes = new Uint8Array(await (await fetch('/samples/sample.epub')).arrayBuffer())
         const asFile = () => new File([bytes], 'sample.epub', { type: 'application/epub+zip' })
         log(`sample.epub ${bytes.length}B`)
 
@@ -101,7 +101,10 @@
         const built = []
         for (const ch of oracle.chapters) {
           const html = await E.readChapter(oracle, ch.index)
-          built.push(html ? await D.buildChapter({ html, chapterPath: ch.path }) : { segs: [], ids: new Map(), text: '' })
+          built.push(html ? await D.buildChapter({
+            html, chapterPath: ch.path,
+            getResource: async (path) => oracle.zip.has(path) ? 'data:,' : null,
+          }) : { segs: [], ids: new Map(), text: '' })
         }
         assertEq('对照：第 1 节 4 段', built[0].segs.length, 4)
         assertEq('对照：第 2 节 9 段', built[1].segs.length, 9)
@@ -149,6 +152,8 @@
           el.dispatchEvent(new Event('input', { bubbles: true }))
         }
         const openPanel = async () => {
+          // 同章搜索跳转时 waitChapter 会立即满足，先等上一次点击真正关闭抽屉。
+          await until(() => !host.querySelector('.drawer'))
           btn('面板').click()
           return until(() => host.querySelector('.drawer'))
         }
@@ -395,8 +400,8 @@
           const stage = host.querySelector('.txt-stage')
           const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
           stage.dispatchEvent(ev)
-          ok('桌面（细指针）contextmenu 仍被拦截', ev.defaultPrevented)
-          ok('触屏探测常量在（COARSE_POINTER=false）', true)
+          const coarse = matchMedia('(hover: none), (pointer: coarse)').matches
+          ok(coarse ? '触屏 contextmenu 放行以保留选区' : '桌面 contextmenu 被拦截', ev.defaultPrevented === !coarse)
         }
 
         // 切走再切回：高亮要按 page 重新贴回来
@@ -448,7 +453,9 @@
         /* ---------- 9. 图文混排的节 ---------- */
         {
           await openPanel()
-          outlineItem('第三章 一张插图').click()
+          const imageChapter = await until(() => outlineItem('第三章 一张插图'))
+          if (!imageChapter) throw new Error('插图目录不可见：' + host.querySelector('.drawer')?.textContent)
+          imageChapter.click()
           ok('切到第 3 节', await waitChapter(3, 5))
           const img = await until(() => host.querySelector('.txt-p img'), 3000)
           ok('随书插图渲染成了 <img>', !!img)
@@ -458,6 +465,27 @@
           ok('正文照样读得下去', segEls().some((p) => p.textContent.includes('脚本被清掉之后')))
           ok('行内 style / class 被剥掉', !host.querySelector('.txt-columns [style], .txt-columns [class*="noise"]'))
           ok('图片加载完没有把位置打乱（页数已重算）', (readPageLabel()?.pages || 0) >= 1)
+          // 图片段不含文字，但占一个虚拟换行，搜索索引不能把这一段删掉。
+          await openPanel()
+          await pickTab('搜索')
+          const phrase = '脚本被清掉之后'
+          setNativeValue(host.querySelector('.search-input'), phrase)
+          const imageHit = await until(() => [...host.querySelectorAll('.hit-item')].find((el) => el.textContent.includes(phrase)))
+          ok('含图片章节可以搜索图片之后的文本', !!imageHit)
+          const expectedOffset = built[2].text.indexOf(phrase)
+          assertEq('图片后的命中字符偏移与正文一致', Number(imageHit.dataset.from), expectedOffset)
+          imageHit.click()
+          await until(() => !host.querySelector('.drawer'))
+          const savedHit = await until(() => Number(host.querySelector('.txt-p:last-child')?.dataset.start) === expectedOffset)
+          ok('图文搜索偏移与正文一致', !!savedHit)
+          const lastSeg = segEls().length - 1
+          ok('图片后的搜索结果跳到正确页面', await until(() => colOfSeg(lastSeg) === currentPage()))
+          // 后面的进度恢复用例从章首翻一页开始。
+          await openPanel()
+          const imageStart = await until(() => outlineItem('第三章 一张插图'))
+          imageStart.click()
+          await until(() => !host.querySelector('.drawer'))
+          await until(() => currentPage() === 0)
         }
 
         /* ---------- 10. 进度落盘 ---------- */
