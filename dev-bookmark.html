@@ -280,7 +280,7 @@
 
         // 前言章很短（两行），一页就完 —— 换到「第1章 出发」才有翻页可言。
         // 顺便把「目录跳转」这条链路也走一遍。
-        ;[...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '面板').click()
+        ;[...host.querySelectorAll('.reader .btn')].find((b) => b.textContent.trim() === '目录').click()
         const ch1 = await until(() => [...host.querySelectorAll('.outline-item')].find((b) => b.textContent.includes('出发')))
         ok('目录里有第 1 章', !!ch1)
         ch1.click()
@@ -332,7 +332,7 @@
         await until(() => host.querySelector('.bm-btn'), 8000)
         const restored = await until(() => { const l = pageLabel(); return l && l.pages > 1 ? l : null }, 8000)
         assertEq('重挂后按章内偏移恢复到第 2 页（不是章首）', restored?.page, 2)
-        ;[...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '面板').click()
+        ;[...host.querySelectorAll('.reader .btn')].find((b) => b.textContent.trim() === '目录').click()
         const bmTab2 = await until(() => [...host.querySelectorAll('.tab')].find((t) => t.textContent.includes('书签')))
         bmTab2.click()
         const listed = await until(() => (host.querySelectorAll('.bm-item').length ? host.querySelectorAll('.bm-item') : null))
@@ -399,7 +399,7 @@
         await sleep(150)
         root = makeEpub()
         await until(() => { const l = pageLabel(); return l && l.pages > 1 ? l : null }, 10000)
-        ;[...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '面板').click()
+        ;[...host.querySelectorAll('.reader .btn')].find((b) => b.textContent.trim() === '目录').click()
         const bmTab3 = await until(() => [...host.querySelectorAll('.tab')].find((t) => t.textContent.includes('书签')))
         bmTab3.click()
         const epubItems = await until(() => (host.querySelectorAll('.bm-item').length ? host.querySelectorAll('.bm-item') : null))

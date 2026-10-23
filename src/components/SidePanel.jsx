@@ -1,4 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { motion, useReducedMotion } from 'motion/react'
+import { Download, X, Search } from 'lucide-react'
+import { Seal } from './InkUI'
+import NoteCard from './NoteCard'
+import useDialogFocus from '../hooks/useDialogFocus'
 import { searchInPages } from '../lib/pdfText'
 
 const TABS = [
@@ -39,27 +44,20 @@ export default function SidePanel({
   onBookmarkToggle,
   onJumpBookmark,
   onBookmarkDelete,
+  initialTab = 'outline',
+  editNoteId,
+  bookTitle,
+  onNoteSaved,
 }) {
-  const [tab, setTab] = useState('outline')
+  const [tab, setTab] = useState(initialTab)
+  const reduce = useReducedMotion()
+  const [noteFilter, setNoteFilter] = useState('all')
+  const dialogRef = useDialogFocus(onClose)
   const [hits, setHits] = useState(null)
   const [tip, setTip] = useState('')
   const [busy, setBusy] = useState(false)
 
   const label = pageLabel || ((i) => `p${i + 1}`)
-
-  const onCloseRef = useRef(onClose)
-  onCloseRef.current = onClose
-
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onCloseRef.current?.()
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [])
 
   // 输入即搜，但压 250ms；索引本身有缓存，重复搜索只是字符串扫描
   useEffect(() => {
@@ -97,7 +95,7 @@ export default function SidePanel({
   const sortedNotes = useMemo(
     () =>
       [...(highlights || [])].sort(
-        (a, b) => a.page - b.page || a.start.item - b.start.item || a.start.offset - b.start.offset
+        (a, b) => a.page - b.page || (a.start?.item || 0) - (b.start?.item || 0) || (a.start?.offset || 0) - (b.start?.offset || 0)
       ),
     [highlights]
   )
@@ -120,7 +118,9 @@ export default function SidePanel({
   return (
     <>
       <div className="drawer-mask" onClick={onClose} />
-      <aside className="drawer" role="dialog" aria-label="阅读面板">
+      <motion.aside ref={dialogRef} className="drawer ink-reading-panel" role="dialog" aria-modal="true" aria-label="阅读面板"
+        initial={{ x: reduce ? 0 : 36, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ duration: .22 }}>
+        <div className="panel-title"><h2>阅读面板 <Seal /></h2><button className="icon-button" onClick={onClose} aria-label="关闭"><X size={22} /></button></div>
         <div className="drawer-head">
           <div className="tabs" role="tablist">
             {TABS.map((t) => (
@@ -136,9 +136,7 @@ export default function SidePanel({
               </button>
             ))}
           </div>
-          <button className="btn btn-sm" onClick={onClose}>
-            关闭
-          </button>
+
         </div>
 
         {indexProgress && (
@@ -215,51 +213,26 @@ export default function SidePanel({
         {tab === 'notes' && (
           <>
             <div className="notes-bar">
-              <span className="notes-count">
-                {sortedNotes.length ? `共 ${sortedNotes.length} 条` : '暂无笔记'}
-              </span>
-              <button
-                className="btn btn-sm"
-                onClick={onExportNotes}
-                disabled={!onExportNotes}
-                title="导出为 Markdown 文件，可按页分享或存档"
-              >
-                导出 Markdown
-              </button>
+              <select aria-label="筛选本书笔记" value={noteFilter} onChange={e => setNoteFilter(e.target.value)}>
+                <option value="all">全部笔记</option><option value="thoughts">附有感想</option>
+                <option value="yellow">黄色高亮</option><option value="green">绿色高亮</option><option value="blue">蓝色高亮</option><option value="pink">粉色高亮</option>
+              </select>
+              <span className="notes-count">{sortedNotes.length ? `共 ${sortedNotes.length} 条` : '暂无笔记'}</span>
+              <button className="btn btn-sm export-notes" onClick={onExportNotes} disabled={!onExportNotes} title="导出为 Markdown 文件，可按页分享或存档"><Download size={13} />导出 Markdown</button>
             </div>
             <div className="panel-body">
-              {sortedNotes.length === 0 ? (
-                <div className="outline-empty">还没有笔记。在正文里按住划选一段文字即可高亮。</div>
-              ) : (
-                sortedNotes.map((h) => (
-                  <div key={h.id} className="note-item">
-                    <button
-                      className="note-main"
-                      onClick={() => (onNoteJump ? onNoteJump(h) : onJumpPage(h.page + 1))}
-                    >
-                      <span className="note-pg">{label(h.page)}</span>
-                      <span className="note-text" data-color={h.color}>
-                        {h.text}
-                      </span>
-                    </button>
-                    <button
-                      className="note-del"
-                      title="删除这条高亮"
-                      aria-label="删除这条高亮"
-                      onClick={() => onMarkDelete(h)}
-                    >
-                      ✕
-                    </button>
-                  </div>
-                ))
-              )}
+              {sortedNotes.length === 0 ? <div className="outline-empty">还没有笔记。在正文里按住划选一段文字即可高亮。</div> :
+                sortedNotes.filter(h => noteFilter === 'all' || (noteFilter === 'thoughts' ? h.note : h.color === noteFilter)).map(h =>
+                  <NoteCard key={h.id} highlight={h} autoEdit={h.id === editNoteId} label={label(h.page)} bookTitle={bookTitle}
+                    onJump={() => onNoteJump ? onNoteJump(h) : onJumpPage(h.page + 1)}
+                    onDelete={() => onMarkDelete(h)} onSaved={onNoteSaved} />)}
             </div>
           </>
         )}
 
         {tab === 'search' && (
           <>
-            <div className="search-bar">
+            <div className="search-bar"><Search size={18} aria-hidden="true" />
               <input
                 className="search-input"
                 type="search"
@@ -292,7 +265,7 @@ export default function SidePanel({
             </div>
           </>
         )}
-      </aside>
+      </motion.aside>
     </>
   )
 }

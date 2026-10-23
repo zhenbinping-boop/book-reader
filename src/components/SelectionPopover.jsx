@@ -1,6 +1,6 @@
-export default function SelectionPopover({ data, onPick, onDelete, onCopy, onClose }) {
+export default function SelectionPopover({ data, onPick, onDelete, onCopy, onClose, onNote }) {
   const { rect } = data
-  const W = 280
+  const W = 320
   const H = 48
   const vw = window.innerWidth
   const vh = window.innerHeight
@@ -70,6 +70,7 @@ export default function SelectionPopover({ data, onPick, onDelete, onCopy, onClo
             </button>
           </>
         )}
+        {onNote && <button className="pop-btn" onClick={onNote}>笔记</button>}
         {isCoarse && <button className="pop-btn" aria-label="关闭选中文字操作" onClick={onClose}>关闭</button>}
       </div>
     </>

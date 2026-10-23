@@ -80,14 +80,14 @@
         }
         // 回退按钮靠 aria-label 找，避免和「返回」的文案纠缠
         const backBtns = () =>
-          [...host.querySelectorAll('.reader-top .btn')].filter(
+          [...host.querySelectorAll('.reader .btn')].filter(
             (b) => b.getAttribute('aria-label') === '回到跳转前的位置'
           )
-        const topBtn = (t) => [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.includes(t))
+        const topBtn = (t) => [...host.querySelectorAll('.reader .btn')].find((b) => b.textContent.includes(t))
         const altLeft = () =>
           window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true }))
         const openOutlineAndClick = async (needle) => {
-          topBtn('面板').click()
+          topBtn('目录').click()
           await until(() => host.querySelector('.outline-item'))
           const item = [...host.querySelectorAll('.outline-item')].find((b) => b.textContent.includes(needle))
           if (!item) throw new Error('目录里找不到：' + needle)

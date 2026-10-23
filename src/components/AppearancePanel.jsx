@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
+import { ThemePicker } from './LibrarySettings'
+import { X } from 'lucide-react'
 import {
-  READER_THEMES,
-  THEME_LABELS,
   READER_SIZES,
   READER_LEADINGS,
   READER_PARA_GAPS,
@@ -53,9 +53,7 @@ export default function AppearancePanel({ values, theme, onChange, onReset, onCl
         <div className="modal-card">
           <div className="drawer-head">
             <strong className="modal-title">外观设置</strong>
-            <button className="btn btn-sm" onClick={onClose}>
-              关闭
-            </button>
+            <button className="icon-button" onClick={onClose} aria-label="关闭"><X size={20} /></button>
           </div>
 
           <div className="modal-body">
@@ -85,19 +83,7 @@ export default function AppearancePanel({ values, theme, onChange, onReset, onCl
 
             <section className="modal-sec">
               <h3>阅读主题</h3>
-              <div className="theme-picker">
-                {READER_THEMES.map((t) => (
-                  <button
-                    key={t}
-                    className={`theme-opt${theme === t ? ' on' : ''}`}
-                    aria-pressed={theme === t}
-                    onClick={() => onChange({ readerTheme: t })}
-                  >
-                    <span className="theme-dot" data-theme={t} aria-hidden="true" />
-                    {THEME_LABELS[t]}
-                  </button>
-                ))}
-              </div>
+              <ThemePicker theme={theme} onChange={t => onChange({ readerTheme: t })} />
               <p className="modal-note">
                 阅读时也可以直接在正文上双指开合来调字号（同样走这 7 档）。
                 主题按设备保存，跟随系统亮暗作为默认。设置只影响 TXT 这类流式排版的书，

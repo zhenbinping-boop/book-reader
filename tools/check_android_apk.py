@@ -10,6 +10,8 @@ with zipfile.ZipFile(sys.argv[1]) as apk:
     assert not config.get('server', {}).get('url'), 'APK must use bundled resources'
     assert 'assets/public/index.html' in names
     assert 'assets/public/webview-error.html' in names
+    for asset in ['art/ink-landscape.webp', 'art/bound-covers.webp', 'fonts/reader-song.woff2']:
+        assert 'assets/public/' + asset in names, 'Missing offline UI asset: ' + asset
     assert any(n.startswith('assets/public/cmaps/') for n in names)
     assert any(n.startswith('assets/public/standard_fonts/') for n in names)
     assert any('pdf.worker' in n and n.endswith('.mjs') for n in names)

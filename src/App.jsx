@@ -7,12 +7,13 @@ import { backfillHashes } from './lib/backup'
 import { useHashRoute, goShelf } from './hooks/useHashRoute'
 import useBackClose from './hooks/useBackClose'
 import { applyThemeColor } from './lib/prefs'
+import { MotionConfig } from 'motion/react'
 
 const PdfReader = lazy(() => import('./components/PdfReader'))
 const TxtReader = lazy(() => import('./components/TxtReader'))
 const EpubReader = lazy(() => import('./components/EpubReader'))
 
-export default function App() {
+function ReaderApp() {
   const route = useHashRoute()
   const [books, setBooks] = useState([])
   const [busy, setBusy] = useState(0)
@@ -23,7 +24,7 @@ export default function App() {
   useBackClose(backupOpen, () => setBackupOpen(false), 'backup')
 
   useEffect(() => {
-    if (route.name === 'shelf') {
+    if (route.name !== 'read') {
       applyThemeColor('shelf')
     }
   }, [route.name])
@@ -33,7 +34,7 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (route.name === 'shelf') refresh()
+    if (route.name !== 'read') refresh()
   }, [refresh, route.name])
 
   // v2 之前导入的书还没有内容指纹，这里补算一次（只读本地 blob，不联网）。
@@ -142,6 +143,8 @@ export default function App() {
         onImport={handleImport}
         onDelete={handleDelete}
         onOpenBackup={() => setBackupOpen(true)}
+        onBooksChanged={refresh}
+        page={route.name}
       />
       {busy > 0 && (
         <div className="center-msg overlay-msg">
@@ -157,4 +160,8 @@ export default function App() {
       )}
     </>
   )
+}
+
+export default function App() {
+  return <MotionConfig reducedMotion="user"><ReaderApp /></MotionConfig>
 }

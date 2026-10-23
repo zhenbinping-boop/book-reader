@@ -72,9 +72,9 @@ export const DEFAULT_PREFS = {
   /** 字号 px，只能取 READER_SIZES 里的档位 */
   readerSize: 18,
   /** 行高倍率，READER_LEADINGS */
-  readerLeading: 1.7,
+  readerLeading: 1.9,
   /** 段间距 em，READER_PARA_GAPS */
-  readerParaGap: 0.5,
+  readerParaGap: 1,
   /** 页边距 px，READER_PADS */
   readerPad: 24,
   /**
@@ -82,6 +82,7 @@ export const DEFAULT_PREFS = {
    * 不该每进一本书重新点一次。申请成败由浏览器决定，失败静默降级。
    */
   readerKeepAwake: false,
+  readerImmersive: false,
   /**
    * 流式格式（TXT / EPUB）的正文版式。默认仍是翻页 —— 老用户的手感不该被改掉，
    * 想滚动的人点一次顶栏那个按钮，之后就一直是滚动。
@@ -142,8 +143,8 @@ export function nextTheme(current) {
 }
 
 export const THEME_BG_COLORS = {
-  paper: '#fdfbf7',
-  sepia: '#f4ecd8',
+  paper: '#f8f2e6',
+  sepia: '#f1e5ca',
   night: '#14161a',
   oled: '#000000',
 }
@@ -151,7 +152,7 @@ export const THEME_BG_COLORS = {
 /** 动态更新移动端（Android/PWA）系统状态栏与导航栏的 theme-color */
 export function applyThemeColor(theme) {
   if (typeof document === 'undefined') return
-  const color = THEME_BG_COLORS[theme] || (theme === 'night' || theme === 'oled' ? '#131519' : '#f7f5f0')
+  const color = THEME_BG_COLORS[theme] || (typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches ? '#171c19' : '#f6f0e3')
   const metas = document.querySelectorAll('meta[name="theme-color"]')
   metas.forEach((m) => m.setAttribute('content', color))
 }

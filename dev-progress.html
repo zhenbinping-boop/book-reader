@@ -113,7 +113,7 @@
           let ready = await until(() => vp() && cols()?.children?.length > 1, 12000)
           // 样书开头是个 2 段的前言章，先进正文章再测
           for (let i = 0; i < nav; i++) {
-            const btn = [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === navBtn)
+            const btn = [...host.querySelectorAll('.reader .btn')].find((b) => b.textContent.trim() === navBtn)
             if (btn) btn.click()
             await sleep(900)
           }
@@ -175,7 +175,7 @@
           let root = mount()
           ok('TXT翻页挂起来了', !!(await until(() => vp() && cols()?.children?.length > 1, 12000)))
           // 先进正文章（前言章只有 1 页）
-          ;[...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '下一章')?.click()
+          ;[...host.querySelectorAll('.reader .btn')].find((b) => b.textContent.trim() === '下一章')?.click()
           await sleep(900)
           key('ArrowRight'); await sleep(600)
           key('ArrowRight'); await sleep(600)
@@ -220,7 +220,7 @@
           let root = mount()
           ok('图片章：挂起来了', !!(await until(() => vp() && cols()?.children?.length > 1, 14000)))
           for (let i = 0; i < 2; i++) {
-            ;[...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '下一节')?.click()
+            ;[...host.querySelectorAll('.reader .btn')].find((b) => b.textContent.trim() === '下一节')?.click()
             await sleep(900)
           }
           await imgsDone()
@@ -308,7 +308,7 @@
           // 第一遍：进第二章（图都在章尾），滚到第 3 段（图片远在两千像素外），退出
           let root = mount()
           ok('lazy书：挂起来了', !!(await until(() => vp() && cols()?.children?.length > 3, 14000)))
-          ;[...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '下一节')?.click()
+          ;[...host.querySelectorAll('.reader .btn')].find((b) => b.textContent.trim() === '下一节')?.click()
           await sleep(1200)
           await until(() => vp() && cols()?.children?.length > 10, 12000)
           ok('lazy书：已到第二章 (' + headSub() + ')', headSub().includes('第 2/'))
@@ -348,7 +348,7 @@
           root = mount()
           ok('EPUB 挂起来了', !!(await until(() => vp() && cols()?.children?.length > 3, 14000)))
           await imgsDone()
-          const nextBtn = () => [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '下一节')
+          const nextBtn = () => [...host.querySelectorAll('.reader .btn')].find((b) => b.textContent.trim() === '下一节')
           ok('「下一节」按钮在', !!nextBtn())
           nextBtn().click()
           await sleep(SETTLE)

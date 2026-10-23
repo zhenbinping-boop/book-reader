@@ -55,3 +55,8 @@ test('Android export propagates write and share failures to UI error handling', 
     share: async () => { throw Error('cancelled') },
   }), /cancelled/)
 })
+test('Android back from notebook and settings returns to the shelf', () => {
+ for(const hash of ['#/notes','#/settings']){
+  const {calls,args}=fixture({hash});handleNativeBack(args);assert.deepEqual(calls,['shelf'])
+ }
+})

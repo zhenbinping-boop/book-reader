@@ -159,7 +159,7 @@
         // （症状：charOffset 记成 0）。见 REFERENCE.md「进度持久化」那条。
         await sleep(450)
 
-        const backBtn = [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '返回')
+        const backBtn = [...host.querySelectorAll('.reader .btn')].find((b) => b.textContent.trim() === '返回')
         ok('顶栏有「返回」', !!backBtn)
         backBtn.click()
         assertEq('返回后 hash 回到书架', location.hash, '#/')

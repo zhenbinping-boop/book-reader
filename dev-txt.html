@@ -198,7 +198,7 @@
         const vp = () => host.querySelector('.txt-viewport')
         const cols = () => host.querySelector('.txt-columns')
         const btn = (text) =>
-          [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.includes(text))
+          [...host.querySelectorAll('.reader .btn')].find((b) => b.textContent.includes(text))
         // 某个绝对偏移落在第几栏 —— 用来断言「位置没跑」
         const colOfOffset = (offset, list) => {
           const el = vp()
@@ -313,7 +313,7 @@
 
         // 目录里跳章
         await sleep(50)
-        const panelBtn = [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.includes('面板'))
+        const panelBtn = [...host.querySelectorAll('.reader .btn')].find((b) => b.textContent.includes('目录'))
         panelBtn.click()
         const outlineItems = await until(() => {
           const list = host.querySelectorAll('.outline-item')
@@ -361,7 +361,7 @@
         sel.removeAllRanges()
 
         /* ---------- 11. 外观设置 ---------- */
-        const aa = [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === 'Aa')
+        const aa = [...host.querySelectorAll('.reader .btn')].find((b) => b.getAttribute('aria-label') === '外观设置')
         ok('找到 Aa 按钮', !!aa)
         aa.click()
         const rows = await until(() => {
@@ -420,7 +420,7 @@
         } else {
           ok('找到「恢复默认」按钮', false)
         }
-        const closeBtn = [...document.querySelectorAll('.modal .btn')].find((b) => b.textContent.includes('关闭'))
+        const closeBtn = document.querySelector('.modal [aria-label="关闭"]')
         closeBtn.click()
         await sleep(80)
         assertEq('面板已关闭', document.querySelectorAll('.appearance-row').length, 0)
@@ -463,7 +463,7 @@
           '先退到第 3 章',
           await until(() => Number(host.querySelector('.txt-p').dataset.start) === chapters[2].start, 3000)
         )
-        btn('面板').click()
+        btn('目录').click()
         await until(() => host.querySelector('.drawer'))
         const notesTab = [...host.querySelectorAll('.drawer .tab')].find((b) => b.textContent.includes('笔记'))
         notesTab.click()

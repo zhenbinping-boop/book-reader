@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite'
+import { readFileSync } from 'node:fs'
 import { VitePWA } from 'vite-plugin-pwa'
 
 /**
@@ -32,8 +33,8 @@ export default defineConfig(async ({ mode }) => {
         scope: '.',
         display: 'standalone',
         orientation: 'any',
-        background_color: '#f7f5f0',
-        theme_color: '#f7f5f0',
+        background_color: '#f6f0e3',
+        theme_color: '#f6f0e3',
         icons: [
           { src: 'icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: 'icon-512.png', sizes: '512x512', type: 'image/png' },
@@ -47,7 +48,7 @@ export default defineConfig(async ({ mode }) => {
       },
       workbox: {
         // worker 是 .mjs；CMap / 字体也必须随安装缓存，才能离线首次打开 PDF。
-        globPatterns: ['**/*.{js,mjs,css,html,png,svg,woff2,bcmap,pfb,ttf}'],
+        globPatterns: ['**/*.{js,mjs,css,html,png,webp,svg,woff2,bcmap,pfb,ttf}'],
         navigateFallback: 'index.html',
         cleanupOutdatedCaches: true,
         // pdf.js 的 CMap / worker 会超过 workbox 默认 2MB 上限
@@ -72,6 +73,7 @@ export default defineConfig(async ({ mode }) => {
 
   return {
     plugins,
+    define: { __APP_VERSION__: JSON.stringify(JSON.parse(readFileSync(new URL('./package.json', import.meta.url))).version) },
     // 没有 plugin-react 时，esbuild 默认走 classic JSX（React.createElement），
     // 会直接报 "React is not defined"。显式指定 automatic runtime。
     esbuild: {

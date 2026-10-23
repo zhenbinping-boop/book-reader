@@ -123,7 +123,7 @@
         dump()
 
         // ---- 4. 侧栏：目录 / 笔记 ----
-        const tabBtn = [...document.querySelectorAll('.reader-top button')].find((b) => b.textContent === '面板')
+        const tabBtn = [...document.querySelectorAll('.reader button')].find((b) => b.textContent === '目录')
         tabBtn?.click()
         await sleep(700)
         log('panel: open=' + !!document.querySelector('.drawer') + ' tabs=' + document.querySelectorAll('.drawer .tab').length)

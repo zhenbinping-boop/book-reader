@@ -1,3 +1,4 @@
+import { prepareReaderFonts } from '../lib/readerFonts'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { openPdf, getPageSizes, buildOutline, extractText } from '../pdf/pdfService'
 import {
@@ -28,7 +29,8 @@ import PdfPage from './PdfPage'
 import SidePanel from './SidePanel'
 import SelectionPopover from './SelectionPopover'
 import DisplayMenu from './DisplayMenu'
-import BookmarkButton from './BookmarkButton'
+import { ReaderHeader, ReaderActions } from './ReaderChrome'
+import useRequestedHighlight from '../hooks/useRequestedHighlight'
 
 const GAP = 12
 const MAX_VISIBLE = 12
@@ -46,8 +48,11 @@ export default function PdfReader({ bookId, title, onBack }) {
   const [current, setCurrent] = useState(1)
   const [mode, setMode] = useState('scroll')
   const [zoom, setZoom] = useState(1)
-  const [ui, setUi] = useState(true)
+  const [ui, setUi] = useState(() => !loadPrefs().readerImmersive)
   const [drawer, setDrawer] = useState(false)
+  const [drawerTab, setDrawerTab] = useState('outline')
+  const [editNoteId, setEditNoteId] = useState(null)
+  const openPanel = (tab = 'outline') => { setDrawerTab(tab); setDrawer(true) }
   // 阅读主题：用户显式选择优先，否则跟随系统（见 DESIGN.md §3.4）
   const [theme, setTheme] = useState(() => resolveTheme(loadPrefs()))
   const [prefs, setPrefs] = useState(() => loadPrefs())
@@ -155,6 +160,8 @@ export default function PdfReader({ bookId, title, onBack }) {
         if (!alive) return
         setHighlights(marks)
         setBookmarks(await listBookmarks(bookId).catch(() => []))
+        if (!alive) return
+        await prepareReaderFonts()
         if (!alive) return
         setPhase('ready')
       } catch (err) {
@@ -631,11 +638,12 @@ export default function PdfReader({ bookId, title, onBack }) {
         if (!latest) { dismissPopover(); return }
         p = { ...p, ...latest }
       }
+      let savedId = p.existing?.id
       try {
         if (p.mode === 'edit') {
           await updateHighlight(p.existing.id, { color })
         } else {
-          await addHighlight({
+          savedId = await addHighlight({
             bookId,
             page: p.page,
             start: p.start,
@@ -653,6 +661,7 @@ export default function PdfReader({ bookId, title, onBack }) {
       }
       clearNativeSelection()
       closePopover()
+      return savedId
     },
     [bookId, closePopover, dismissPopover, reloadHighlights]
   )
@@ -743,6 +752,17 @@ export default function PdfReader({ bookId, title, onBack }) {
     return map
   }, [highlights])
 
+  const writeSelectionNote = async () => {
+    const existing = popoverRef.current?.existing
+    const id = existing?.id || await pickColor('yellow')
+    if (!id) return
+    dismissPopover()
+    setEditNoteId(id)
+    openPanel('notes')
+  }
+
+  useRequestedHighlight(phase, highlights, h => { setDrawer(false); jumpToPage(h.page + 1) })
+
   if (phase !== 'ready') {
     return (
       <div className="center-msg">
@@ -824,73 +844,15 @@ export default function PdfReader({ bookId, title, onBack }) {
         </div>
       </div>
 
-      <div className={`reader-top${ui ? '' : ' hidden'}`}>
-        <button className="btn btn-sm" onClick={onBack}>
-          返回
-        </button>
-        {histDepth > 0 && (
-          <button
-            className="btn btn-sm"
-            onClick={backToPrev}
-            title="回到跳转前的位置（Alt+←）"
-            aria-label="回到跳转前的位置"
-          >
-            ↩
-          </button>
-        )}
-        <div className="reader-title">{title}</div>
-        <button
-          className="btn btn-sm"
-          onClick={() => setMode((m) => (m === 'scroll' ? 'page' : 'scroll'))}
-        >
-          {mode === 'scroll' ? '连续' : '单页'}
-        </button>
-        <BookmarkButton on={!!currentBookmark} onToggle={toggleBookmark} />
-        <button
-          className="btn btn-sm toolbar-optional"
-          onClick={() => setZoom((z) => clampZoom(z - 0.25))}
-        >
-          −
-        </button>
-        <button
-          className="btn btn-sm"
-          style={{ minWidth: 48, fontVariantNumeric: 'tabular-nums' }}
-          onClick={() => setZoom(1)}
-          title="恢复 100%"
-        >
-          {Math.round(zoom * 100)}%
-        </button>
-        <button
-          className="btn btn-sm toolbar-optional"
-          onClick={() => setZoom((z) => clampZoom(z + 0.25))}
-        >
-          ＋
-        </button>
-        <button
-          className="btn btn-sm theme-btn"
-          title={`阅读主题：${THEME_LABELS[theme]}`}
-          aria-label={`切换阅读主题，当前为${THEME_LABELS[theme]}`}
-          onClick={() => {
-            const next = nextTheme(theme)
-            setTheme(next)
-            savePrefs({ readerTheme: next })
-            setPrefs((p) => ({ ...p, readerTheme: next }))
-          }}
-        >
-          <span className="theme-dot" data-theme={theme} aria-hidden="true" />
-        </button>
-        <button
-          className="btn btn-sm"
-          onClick={() => setMenu(true)}
-          title="显示设置：常亮 / 沉浸 / 主题"
-          aria-label="显示设置"
-        >
-          ⋯
-        </button>
-        <button className="btn btn-sm" onClick={() => setDrawer(true)}>
-          面板
-        </button>
-      </div>
+      <ReaderHeader visible={ui} title={title} onBack={onBack} histDepth={histDepth} onHistoryBack={backToPrev}
+        bookmarked={!!currentBookmark} onBookmark={toggleBookmark} onMenu={() => setMenu(true)}>
+        <button className="btn btn-sm theme-btn" aria-label={`切换阅读主题，当前为${THEME_LABELS[theme]}`} title="切换阅读主题" onClick={() => { const next = nextTheme(theme); setTheme(next); savePrefs({ readerTheme: next }); setPrefs(p => ({ ...p, readerTheme: next })) }}><span className="theme-dot" data-theme={theme} aria-hidden="true" /></button>
+        <div className="pdf-zoom-controls">
+          <button className="btn btn-sm toolbar-optional" onClick={() => setZoom(z => clampZoom(z - .25))} aria-label="缩小 PDF">−</button>
+          <button className="btn btn-sm" onClick={() => setZoom(1)} title="恢复 100%">{Math.round(zoom * 100)}%</button>
+          <button className="btn btn-sm toolbar-optional" onClick={() => setZoom(z => clampZoom(z + .25))} aria-label="放大 PDF">＋</button>
+        </div>
+      </ReaderHeader>
 
       <div className={`reader-bottom${ui ? '' : ' hidden'}`} onClick={(e) => e.stopPropagation()}>
         <div className="scrub">
@@ -905,12 +867,15 @@ export default function PdfReader({ bookId, title, onBack }) {
             {current} / {total}
           </span>
         </div>
+        <ReaderActions pdf onPanel={() => openPanel('outline')} onBookmarks={() => openPanel('bookmarks')}
+          onPrevious={() => goTo(current - 1)} onNext={() => goTo(current + 1)} onAppearance={() => setMenu(true)} onFlow={() => setMode(m => m === 'scroll' ? 'page' : 'scroll')} flow={mode} />
       </div>
 
       {popover && (
         <SelectionPopover
           data={popover}
           onPick={pickColor}
+          onNote={writeSelectionNote}
           onDelete={removeMark}
           onCopy={copyMarkText}
           onClose={dismissPopover}
@@ -919,6 +884,10 @@ export default function PdfReader({ bookId, title, onBack }) {
 
       {drawer && (
         <SidePanel
+          initialTab={drawerTab}
+          editNoteId={editNoteId}
+          bookTitle={title}
+          onNoteSaved={h => setHighlights(rows => rows.map(n => n.id === h.id ? h : n))}
           outline={outline}
           current={current}
           onClose={() => setDrawer(false)}

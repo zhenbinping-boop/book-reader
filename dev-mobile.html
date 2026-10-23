@@ -420,7 +420,7 @@
         const vp = () => host.querySelector('.txt-viewport')
         const cols = () => host.querySelector('.txt-columns')
         const btn = (text) =>
-          [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.includes(text))
+          [...host.querySelectorAll('.reader .btn')].find((b) => b.textContent.includes(text))
         const readNums = () => {
           const el = host.querySelector('.scrub-num')
           if (!el) return null
@@ -477,7 +477,7 @@
         assertEq('TXT 初始字号', sizeVar(), '18px')
         // 先挪到「长章的中间一页」再缩放。停在章首的话，就算缩放把位置拽回
         // 章首也看不出来 —— 这个测试就白做了
-        btn('面板').click()
+        btn('目录').click()
         await until(() => host.querySelector('.outline-item'), 3000)
         ;[...host.querySelectorAll('.outline-item')].find((b) => b.textContent.includes('第十二章')).click()
         await sleep(250)
@@ -535,7 +535,7 @@
 
         /* ================= 6. 显示面板：常亮 / 沉浸 / 外观 / 翻页方式 ================= */
         const prevLockCalls = lockCalls
-        btn('⋯').click()
+        host.querySelector('.reader [aria-label="显示设置"]').click()
         ok('⋯ 打开了显示面板', await until(() => document.querySelector('.display-menu'), 3000))
         const rows = [...document.querySelectorAll('.display-menu .display-row')]
         assertEq('面板里有 4 行', rows.length, 4)
@@ -599,12 +599,12 @@
         await until(() => document.querySelector('.display-menu'), 2000)
         document.querySelectorAll('.display-menu .display-row')[2].click()
         ok('从面板进入外观设置', await until(() => document.querySelector('.appearance-preview'), 3000))
-        ;[...document.querySelectorAll('.modal .btn')].find((b) => b.textContent.includes('关闭')).click()
+        document.querySelector('.modal [aria-label="关闭"]').click()
         await sleep(150)
         assertEq('外观设置打开后显示面板已收起', document.querySelectorAll('.display-menu').length, 0)
 
         // 退出沉浸
-        btn('⋯').click()
+        host.querySelector('.reader [aria-label="显示设置"]').click()
         await until(() => document.querySelector('.display-menu'), 2000)
         const prevFs2 = fsExit
         document.querySelectorAll('.display-menu .display-row')[1].click()
@@ -628,10 +628,10 @@
 
         const zoomLabel = () => btn('%')?.textContent.trim()
         assertEq('初始缩放 100%', zoomLabel(), '100%')
-        assertEq('工具栏里有 ⋯', !!btn('⋯'), true)
+        assertEq('工具栏里有 ⋯', !!host.querySelector('.reader [aria-label="显示设置"]'), true)
         assertEq(
           '± 标了 toolbar-optional（窄屏收起，双指接管）',
-          [...host.querySelectorAll('.reader-top .btn.toolbar-optional')].length,
+          [...host.querySelectorAll('.reader .btn.toolbar-optional')].length,
           2
         )
 
@@ -654,7 +654,7 @@
         }
 
         // PDF 的显示面板：常亮 / 沉浸 / 主题（没有外观设置，版式书字号无意义）
-        btn('⋯').click()
+        host.querySelector('.reader [aria-label="显示设置"]').click()
         ok('PDF ⋯ 打开显示面板', await until(() => document.querySelector('.display-menu'), 3000))
         const prows = () => [...document.querySelectorAll('.display-menu .display-row')]
         assertEq('PDF 面板 3 行', prows().length, 3)
@@ -685,7 +685,7 @@
 
         // 沉浸：PDF 这边也要能用，而且退出后工具栏/进度条要回来
         const prevFsP = fsReq
-        btn('⋯').click()
+        host.querySelector('.reader [aria-label="显示设置"]').click()
         await until(() => document.querySelector('.display-menu'), 2000)
         prows()[1].click()
         await until(() => fsReq > prevFsP, 3000)

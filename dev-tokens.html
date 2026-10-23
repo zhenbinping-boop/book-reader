@@ -28,10 +28,10 @@
 
       const THEMES = ['paper', 'sepia', 'night', 'oled']
 
-      // DESIGN.md §3.3 的期望值 —— 改基线时必须同步改这里
+      // DESIGN.md §16.1 的期望值 —— 改基线时必须同步改这里
       const EXPECT = {
-        paper: { bg: '#fdfbf7', surface: '#eae6de', text: '#1a1a1a', muted: '#6b6b6b', accent: '#8a5a2b' },
-        sepia: { bg: '#f4ecd8', surface: '#e3d8be', text: '#3b3327', muted: '#6b6b6b', accent: '#8a5a2b' },
+        paper: { bg: '#f8f2e6', surface: '#e9e0cd', text: '#2b2b25', muted: '#766d5d', accent: '#285b47' },
+        sepia: { bg: '#f1e5ca', surface: '#e3d8be', text: '#403523', muted: '#6b6b6b', accent: '#526344' },
         night: { bg: '#14161a', surface: '#0e1013', text: '#b9b5ae', muted: '#9a9489', accent: '#c9a37a' },
         oled: { bg: '#000000', surface: '#0a0a0a', text: '#a8a8a8', muted: '#8a857a', accent: '#c9a37a' },
       }
@@ -99,7 +99,7 @@
           log('=== 4) 未设 data-reader-theme 时应回落到系统默认 ===')
           el.removeAttribute('data-reader-theme')
           const fallback = readVar(el, '--reader-bg')
-          log('fallback --reader-bg = ' + fallback + ' (light 期望 #fdfbf7 / dark 期望 #14161a)')
+          log('fallback --reader-bg = ' + fallback + ' (light 期望 #f8f2e6 / dark 期望 #14161a)')
 
           log('=== 5) 主题切换按钮的色块色值 ===')
           for (const t of THEMES) {

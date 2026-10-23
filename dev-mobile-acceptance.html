@@ -225,7 +225,7 @@ try {
     fire(view,'touchmove',[[160,60]]);fire(view,'touchend',[[160,60]])
     await sleep(300)
     ok(name+' 同一次滚动到章末不会误跨章',chapter()===before)
-    const next=[...host.querySelectorAll('.reader-top button')].find(el=>/下一[章节]/.test(el.textContent))
+    const next=[...host.querySelectorAll('.reader button')].find(el=>/下一[章节]/.test(el.textContent))
     next.click();await until(()=>chapter()!==before)
     ok(name+' 显式下一章按钮仍然有效',true)
   }

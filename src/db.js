@@ -177,7 +177,7 @@ export async function addHighlight(row) {
 }
 
 export async function updateHighlight(id, patch) {
-  await db.highlights.update(Number(id), patch)
+  return db.highlights.update(Number(id), { ...patch, updatedAt: Date.now() })
 }
 
 export async function deleteHighlight(id) {

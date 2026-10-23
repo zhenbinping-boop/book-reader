@@ -145,7 +145,7 @@
         }
         const chapLabel = () => host.querySelector('.scrub-chap').textContent.trim()
         const headSub = () => host.querySelector('.txt-head-sub').textContent.replace(/\s/g, '')
-        const btn = (t) => [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.includes(t))
+        const btn = (t) => [...host.querySelectorAll('.reader .btn')].find((b) => b.textContent.includes(t))
         const setNativeValue = (el, v) => {
           const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
           set.call(el, String(v))
@@ -154,11 +154,11 @@
         const openPanel = async () => {
           // 同章搜索跳转时 waitChapter 会立即满足，先等上一次点击真正关闭抽屉。
           await until(() => !host.querySelector('.drawer'))
-          btn('面板').click()
+          btn('目录').click()
           return until(() => host.querySelector('.drawer'))
         }
         const closePanel = () => {
-          const c = [...host.querySelectorAll('.drawer .btn')].find((b) => b.textContent.trim() === '关闭')
+          const c = host.querySelector('.drawer [aria-label="关闭"]')
           if (c) c.click()
         }
         const pickTab = async (label) => {
@@ -288,7 +288,7 @@
 
         /* ---------- 6. 位置后退栈 ---------- */
         {
-          const backBtn = () => [...host.querySelectorAll('.reader-top .btn')].find((b) => b.textContent.trim() === '↩')
+          const backBtn = () => [...host.querySelectorAll('.reader .btn')].find((b) => b.textContent.trim() === '↩')
           ok('跳转过后出现「↩」按钮', !!backBtn())
           backBtn().click()
           ok('「↩」把位置退回跳转前的第 4 节', await until(() => (chapLabel() === '第 4/5 节' ? true : null), 4000))
@@ -447,7 +447,23 @@
           ok('命中带片段', hits[0].querySelector('.hit-text').textContent.includes('松了一口气'))
           hits[0].click()
           ok('点命中跳回第 2 节', await waitChapter(2, 9))
-          ok('跳到的正是命中所在的第 6 段那一栏', await until(() => (colOfSeg(6) === currentPage() ? true : null), 3000))
+          // 段落可能跨栏；直接用命中文字的 Range 检查落点，不把段首当作命中位置。
+          ok('搜索命中文字确实出现在当前可视页面', await until(() => {
+            const el = segEls()[6], needle = '松了一口气'
+            if (!el) return false
+            let offset = el.textContent.indexOf(needle)
+            if (offset < 0) return false
+            const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+            let node
+            while ((node = walker.nextNode())) {
+              if (offset >= node.length) { offset -= node.length; continue }
+              const range = document.createRange()
+              range.setStart(node, offset); range.setEnd(node, Math.min(node.length, offset + needle.length))
+              const r = range.getBoundingClientRect(), v = vp().getBoundingClientRect()
+              return r.left >= v.left - 1 && r.right <= v.right + 1 && r.top >= v.top - 1 && r.bottom <= v.bottom + 1
+            }
+            return false
+          }, 3000))
         }
 
         /* ---------- 9. 图文混排的节 ---------- */

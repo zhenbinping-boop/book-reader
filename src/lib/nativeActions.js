@@ -5,7 +5,7 @@ export function handleNativeBack({ state, hash, selection, back, shelf, minimize
     return
   }
   if (state?.__backClose) return back()
-  if (hash.startsWith('#/read/')) return shelf()
+  if (/^#\/(read\/|notes|settings)/.test(hash)) return shelf()
   pause()
   return minimize()
 }

@@ -1,4 +1,5 @@
 import { isNative, nativeExport } from './native'
+import { restoredNotePatch } from './library'
 import { db } from '../db'
 
 /**
@@ -215,6 +216,10 @@ export async function buildBackup({ includeFiles = false } = {}) {
       fileName: b.fileName ?? null,
       addedAt: b.addedAt ?? null,
       lastReadAt: b.lastReadAt ?? null,
+      collection: b.collection || '',
+      readingStatus: b.readingStatus || null,
+      artCover: !!b.artCover,
+      coverStyle: b.coverStyle,
     })),
     progress: snapshot.progress,
     highlights: snapshot.highlights,
@@ -274,6 +279,7 @@ export function notesToMarkdown(book, highlights, opts = {}) {
       const text = String(h.text ?? '').replace(/\s*\n\s*/g, ' ').trim()
       lines.push(`- ${text}`)
       if (h.note) lines.push(`  - 备注：${h.note}`)
+      if (h.tags?.length) lines.push(`  - 标签：${h.tags.join('、')}`)
     }
     lines.push('')
   }
@@ -333,6 +339,7 @@ function validateBackup(data) {
       throw new Error(`备份的 ${key} 字段无效`)
     }
   }
+  if ((data.highlights || []).some(h => (h.note != null && typeof h.note !== 'string') || (h.tags != null && (!Array.isArray(h.tags) || h.tags.some(t => typeof t !== 'string'))))) throw new Error('备份的笔记或标签无效')
   if ((data.files || []).some((f) => typeof f.data !== 'string')) throw new Error('备份的原文件数据无效')
   return data
 }
@@ -364,6 +371,7 @@ export async function restoreBackup(data) {
         progress: 0,
         highlights: 0,
         skippedHighlights: 0,
+        updatedHighlights: 0,
         bookmarks: 0,
         files: 0,
         orphanTitles: [],
@@ -387,6 +395,10 @@ export async function restoreBackup(data) {
 
         if (target) {
           const patch = {}
+          if (target.coverStyle == null && Number.isInteger(b.coverStyle) && b.coverStyle >= 0 && b.coverStyle <= 3) patch.coverStyle = b.coverStyle
+          if (b.collection && !target.collection) patch.collection = String(b.collection).slice(0, 30)
+          if (!target.readingStatus && ['unread', 'reading', 'finished'].includes(b.readingStatus)) patch.readingStatus = b.readingStatus
+          if (target.artCover == null && b.artCover) patch.artCover = true
           if (b.cover && !target.cover) patch.cover = b.cover
           if (b.author && !target.author) patch.author = b.author
           if (b.fileHash && !target.fileHash) patch.fileHash = b.fileHash
@@ -406,6 +418,10 @@ export async function restoreBackup(data) {
             missingFile: !fileBookIds.has(Number(b.id)),
             addedAt: b.addedAt ?? Date.now(),
             lastReadAt: b.lastReadAt ?? Date.now(),
+            collection: String(b.collection || '').slice(0, 30),
+            readingStatus: ['unread', 'reading', 'finished'].includes(b.readingStatus) ? b.readingStatus : null,
+            artCover: !!b.artCover,
+            coverStyle: b.coverStyle,
           })
           target = { ...b, id }
           if (b.fileHash) byHash.set(b.fileHash, target)
@@ -430,18 +446,26 @@ export async function restoreBackup(data) {
       }
 
       // 高亮：按位置去重
-      const seen = new Set((await db.highlights.toArray()).map(markKey))
+      const seen = new Map((await db.highlights.toArray()).map(h => [markKey(h), h]))
       for (const h of data.highlights || []) {
         const bid = idMap.get(Number(h.bookId))
         if (!bid) continue
         const row = { ...h, bookId: bid }
         delete row.id
         if (seen.has(markKey(row))) {
+          const existing = seen.get(markKey(row))
+          const patch = restoredNotePatch(existing, row)
+          if (patch) {
+            await db.highlights.update(existing.id, patch)
+            seen.set(markKey(row), { ...existing, ...patch })
+            report.updatedHighlights++
+          }
           report.skippedHighlights++
           continue
         }
-        seen.add(markKey(row))
-        await db.highlights.add({ color: 'yellow', note: '', ...row })
+        const inserted = { color: 'yellow', note: '', ...row }
+        inserted.id = await db.highlights.add(inserted)
+        seen.set(markKey(row), inserted)
         report.highlights++
       }
 

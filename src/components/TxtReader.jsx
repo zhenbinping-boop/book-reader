@@ -1,3 +1,4 @@
+import { prepareReaderFonts } from '../lib/readerFonts'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   db,
@@ -32,7 +33,8 @@ import SidePanel from './SidePanel'
 import SelectionPopover from './SelectionPopover'
 import AppearancePanel from './AppearancePanel'
 import DisplayMenu from './DisplayMenu'
-import BookmarkButton from './BookmarkButton'
+import { ReaderHeader, ReaderActions } from './ReaderChrome'
+import useRequestedHighlight from '../hooks/useRequestedHighlight'
 
 /** 栏间距，必须与 styles.css 里 .reader.txt-reader 的 --txt-gap 保持一致 */
 const GAP = 40
@@ -69,8 +71,11 @@ export default function TxtReader({ bookId, title, onBack }) {
   // 不再是只看章号的粗粒度值；null = 还没量出来，回退到章号百分比
   const [finePct, setFinePct] = useState(null)
   const [box, setBox] = useState({ w: 0, h: 0 })
-  const [ui, setUi] = useState(true)
+  const [ui, setUi] = useState(() => !loadPrefs().readerImmersive)
   const [drawer, setDrawer] = useState(false)
+  const [drawerTab, setDrawerTab] = useState('outline')
+  const [editNoteId, setEditNoteId] = useState(null)
+  const openPanel = (tab = 'outline') => { setDrawerTab(tab); setDrawer(true) }
   const [appearance, setAppearance] = useState(false)
   const [prefs, setPrefs] = useState(() => loadPrefs())
   const [theme, setTheme] = useState(() => resolveTheme(loadPrefs()))
@@ -187,6 +192,8 @@ export default function TxtReader({ bookId, title, onBack }) {
         if (!alive) return
         setHighlights(marks)
         setBookmarks(await listBookmarks(bookId).catch(() => []))
+        if (!alive) return
+        await prepareReaderFonts()
         if (!alive) return
         setPhase('ready')
 
@@ -920,13 +927,14 @@ export default function TxtReader({ bookId, title, onBack }) {
         const base = docRef.current?.chapters?.[chapterRef.current]?.start ?? 0
         p = { ...p, from: Math.max(0, latest.from - base), to: Math.max(0, latest.to - base), text: latest.text }
       }
+      let savedId = p.existing?.id
       try {
         if (p.existing) {
           await updateHighlight(p.existing.id, { color })
         } else {
           // 存成与 PDF 相同的形状：page 表示章序号，start/end 的 offset 是章内字符偏移。
           // 这样笔记列表、导出、备份恢复都不用为 TXT 单独开一套。
-          await addHighlight({
+          savedId = await addHighlight({
             bookId,
             page: chapterRef.current,
             start: { item: 0, offset: p.from },
@@ -943,6 +951,7 @@ export default function TxtReader({ bookId, title, onBack }) {
       }
       clearNativeSelection()
       closePopover()
+      return savedId
     },
     [bookId, closePopover, dismissPopover, reloadHighlights]
   )
@@ -1052,6 +1061,17 @@ export default function TxtReader({ bookId, title, onBack }) {
     '--reader-pad': `${prefs.readerPad}px`,
   }
 
+  const writeSelectionNote = async () => {
+    const existing = popoverRef.current?.existing
+    const id = existing?.id || await pickColor('yellow')
+    if (!id) return
+    dismissPopover()
+    setEditNoteId(id)
+    openPanel('notes')
+  }
+
+  useRequestedHighlight(phase, highlights, h => jumpToAnchor(h.page, h.start?.offset ?? 0))
+
   if (phase !== 'ready') {
     return (
       <div className="center-msg">
@@ -1133,71 +1153,14 @@ export default function TxtReader({ bookId, title, onBack }) {
         </div>
       </div>
 
-      <div className={`reader-top${ui ? '' : ' hidden'}`}>
-        <button className="btn btn-sm" onClick={onBack}>
-          返回
-        </button>
-        {histDepth > 0 && (
-          <button
-            className="btn btn-sm"
-            onClick={backToPrev}
-            title="回到跳转前的位置（Alt+←）"
-            aria-label="回到跳转前的位置"
-          >
-            ↩
-          </button>
-        )}
-        <div className="txt-head">
-          <div className="txt-head-title">{chap?.title || title}</div>
-          <div className="txt-head-sub">
-            第 {chapter + 1}/{total} 章 · {pct}%
-          </div>
+      <ReaderHeader visible={ui} title={title} subtitle={chap?.title} status={`第 ${chapter + 1}/${total} 章 · ${pct}%`}
+        onBack={onBack} histDepth={histDepth} onHistoryBack={backToPrev}
+        bookmarked={!!currentBookmark} onBookmark={toggleBookmark} onMenu={() => setMenu(true)}>
+        <div className="chapter-navigation toolbar-optional">
+          <button className="btn btn-sm toolbar-optional" onClick={() => goChapter(chapter - 1, 0, true)} disabled={chapter <= 0} title="上一章">上一章</button>
+          <button className="btn btn-sm toolbar-optional" onClick={() => goChapter(chapter + 1)} disabled={chapter >= total - 1} title="下一章">下一章</button>
         </div>
-        <button
-          className="btn btn-sm toolbar-optional"
-          onClick={() => goChapter(chapter - 1, 0, true)}
-          disabled={chapter <= 0}
-          title="上一章"
-        >
-          上一章
-        </button>
-        <button
-          className="btn btn-sm toolbar-optional"
-          onClick={() => goChapter(chapter + 1)}
-          disabled={chapter >= total - 1}
-          title="下一章"
-        >
-          下一章
-        </button>
-        <button
-          className="btn btn-sm"
-          onClick={toggleFlow}
-          data-flow={flow}
-          title={flow === 'scroll' ? '现在是竖向滚动，点一下改回翻页' : '现在是翻页，点一下改成竖向滚动'}
-        >
-          {flow === 'scroll' ? '滚动' : '翻页'}
-        </button>
-        <BookmarkButton on={!!currentBookmark} onToggle={toggleBookmark} />
-        <button
-          className="btn btn-sm"
-          onClick={() => setAppearance(true)}
-          title="字号与主题"
-          aria-label="外观设置"
-        >
-          Aa
-        </button>
-        <button
-          className="btn btn-sm"
-          onClick={() => setMenu(true)}
-          title="显示设置：常亮 / 沉浸"
-          aria-label="显示设置"
-        >
-          ⋯
-        </button>
-        <button className="btn btn-sm" onClick={() => setDrawer(true)}>
-          面板
-        </button>
-      </div>
+      </ReaderHeader>
 
       <div className={`reader-bottom${ui ? '' : ' hidden'}`} onClick={(e) => e.stopPropagation()}>
         <div className="scrub">
@@ -1205,14 +1168,7 @@ export default function TxtReader({ bookId, title, onBack }) {
             第 {chapter + 1}/{total} 章
           </span>
           {/* 桌面鼠标没有滑动手势，点屏幕又只负责工具栏 —— 翻页给两个固定按钮 */}
-          <button
-            className="btn btn-sm scrub-btn"
-            onClick={prevPage}
-            title="上一页"
-            aria-label="上一页"
-          >
-            ‹
-          </button>
+
           {flow === 'scroll' ? (
             <>
               {/* 滚动模式下没有「第几页」，滑杆改成「第几段」—— 拖一下就能在节内定位 */}
@@ -1239,21 +1195,17 @@ export default function TxtReader({ bookId, title, onBack }) {
               </span>
             </>
           )}
-          <button
-            className="btn btn-sm scrub-btn"
-            onClick={nextPage}
-            title="下一页"
-            aria-label="下一页"
-          >
-            ›
-          </button>
+
         </div>
+        <ReaderActions onPanel={() => openPanel('outline')} onBookmarks={() => openPanel('bookmarks')}
+          onPrevious={prevPage} onNext={nextPage} onAppearance={() => setAppearance(true)} onFlow={toggleFlow} flow={flow} />
       </div>
 
       {popover && (
         <SelectionPopover
           data={popover}
           onPick={pickColor}
+          onNote={writeSelectionNote}
           onDelete={removeMark}
           onCopy={copyText}
           onClose={dismissPopover}
@@ -1274,6 +1226,10 @@ export default function TxtReader({ bookId, title, onBack }) {
 
       {drawer && (
         <SidePanel
+          initialTab={drawerTab}
+          editNoteId={editNoteId}
+          bookTitle={title}
+          onNoteSaved={h => setHighlights(rows => rows.map(n => n.id === h.id ? h : n))}
           outline={outline}
           current={chapter + 1}
           onClose={() => setDrawer(false)}

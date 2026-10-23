@@ -230,6 +230,7 @@ export default function BackupPanel({ onClose, onRestored }) {
                   <li>新增书目：{report.addedBooks} 本</li>
                   <li>并入已有书：{report.mergedBooks} 本</li>
                   <li>恢复高亮：{report.highlights} 条（跳过重复 {report.skippedHighlights} 条）</li>
+                  {report.updatedHighlights > 0 && <li>更新较新的笔记：{report.updatedHighlights} 条</li>}
                   <li>恢复进度：{report.progress} 条</li>
                   {report.bookmarks > 0 && <li>恢复书签：{report.bookmarks} 条</li>}
                   {report.files > 0 && <li>恢复原文件：{report.files} 个</li>}

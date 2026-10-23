@@ -148,8 +148,7 @@
         const vp = () => host.querySelector('.txt-viewport')
         const cols = () => host.querySelector('.txt-columns')
         const segs = () => [...(cols()?.children || [])]
-        const flowBtn = () =>
-          [...host.querySelectorAll('.reader-top .btn')].find((b) => b.dataset.flow)
+        const flowBtn = () => host.querySelector('.reader button[data-flow]')
         const chapLabel = () => (host.querySelector('.scrub-chap')?.textContent || '').replace(/\s+/g, '')
         const scrubNum = () => (host.querySelector('.scrub-num')?.textContent || '').trim()
         const pageLabel = () => {
@@ -180,7 +179,7 @@
         }
         const clickTopBtn = async (text, ms = 6000) => {
           const b = await until(
-            () => [...host.querySelectorAll('.reader-top .btn')].find((x) => x.textContent.trim() === text),
+            () => [...host.querySelectorAll('.reader .btn')].find((x) => x.textContent.trim() === text),
             ms
           )
           if (b) b.click()
@@ -216,7 +215,7 @@
         assertEq('没有 x / y 页码，改成章内百分比', /%$/.test(scrubNum()), true)
 
         // 换到「第1章 出发」（够长，能滚好几屏）。顺便走一遍目录跳转
-        await clickTopBtn('面板')
+        await clickTopBtn('目录')
         const ch1 = await until(() => [...host.querySelectorAll('.outline-item')].find((b) => b.textContent.includes('出发')))
         ok('目录里有第 1 章', !!ch1)
         ch1.click()
@@ -272,25 +271,45 @@
         }, 6000)
         ok(`章首再往上走，回上一章（${beforeBack} → ${backChap}）`, !!backChap)
 
-        // 切回翻页：位置不丢（锚点段应落在当前显示的那一栏）
+        // Isolate mode-switch restoration from the prior chapter-boundary jump.
+        // At the very end, the top line may be whitespace after the last glyph.
+        await sleep(250)
+        vp().scrollTop = (vp().scrollHeight - vp().clientHeight) * .43
+        await sleep(250)
+        // 切回翻页：视口顶部的字符应落在当前显示的那一栏。
         const k2 = topIdx()
+        // Find the first visible character independently of the reader's anchor
+        // helpers. A paragraph may span several columns after reflow.
+        const walker = document.createTreeWalker(cols().children[k2], NodeFilter.SHOW_TEXT)
+        let node, topCharacter = 0, foundCharacter = false
+        while ((node = walker.nextNode()) && !foundCharacter) {
+          for (let i = 0; i < node.length; i++) {
+            const range = document.createRange(); range.setStart(node, i); range.setEnd(node, i + 1)
+            if (range.getBoundingClientRect().bottom > vp().getBoundingClientRect().top + 1) { foundCharacter = true; break }
+            topCharacter++
+          }
+        }
+        ok('切换前找到视口顶部的真实字符', foundCharacter)
         flowBtn().click()
         await until(() => !cols().classList.contains('scroll-flow'), 5000)
         assertEq('切回翻页后不再有 scroll-flow', cols().classList.contains('scroll-flow'), false)
         ok('栏宽 / 栏高又写回内联 style', /column-width/.test(cols().getAttribute('style') || ''))
         assertEq('顶栏按钮变回「翻页」', flowBtn()?.textContent.trim(), '翻页')
         assertEq('底部滑杆变回 x / y', !!pageLabel(), true)
-        const colOf = (idx) => {
-          const cs = cols()
-          const el = cs?.children?.[idx]
-          const v = vp()
-          if (!el || !v) return -1
-          const x = el.getBoundingClientRect().left - v.getBoundingClientRect().left + v.scrollLeft
-          return Math.max(0, Math.floor((x + 1) / (v.clientWidth + 40)))
-        }
         const pl = await until(() => pageLabel(), 4000)
-        log(`切版式校验：动之前顶段 ${k2}，切完落在第 ${pl?.page}/${pl?.pages} 页`)
-        assertEq('切版式后锚点段就在当前那一栏（位置没丢）', colOf(k2), pl.page - 1)
+        log(`切版式校验：动之前顶段 ${k2} 的字符 ${topCharacter}，切完落在第 ${pl?.page}/${pl?.pages} 页`)
+        const characterVisible = () => {
+          const walker = document.createTreeWalker(cols().children[k2], NodeFilter.SHOW_TEXT)
+          let n, offset = topCharacter
+          while ((n = walker.nextNode())) {
+            if (offset >= n.length) { offset -= n.length; continue }
+            const r = document.createRange(); r.setStart(n, offset); r.setEnd(n, offset + 1)
+            const box = r.getBoundingClientRect(), view = vp().getBoundingClientRect()
+            return box.right > view.left && box.left < view.right && box.bottom > view.top && box.top < view.bottom
+          }
+          return false
+        }
+        ok('切版式后原来视口顶部的字符仍在当前页', !!await until(characterVisible, 4000))
 
         root.unmount()
         await sleep(120)
@@ -317,7 +336,7 @@
 
         // 第 1 节太短（封面那类），换到第 3 节 —— 它既够长、又带图，
         // 图片解码会改版面，正好把「等版面定格再定位」那条链路一起走一遍
-        await clickTopBtn('面板')
+        await clickTopBtn('目录')
         const eitem = await until(() => {
           const items = [...host.querySelectorAll('.outline-item')]
           return items.length >= 3 ? items[2] : null

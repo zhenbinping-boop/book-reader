@@ -91,11 +91,11 @@
         log('theme: afterClick=' + readerEl?.getAttribute('data-reader-theme'))
         log('theme: bgAfter=' + getComputedStyle(readerEl).backgroundColor)
         log('theme: persisted=' + localStorage.getItem('book-reader:prefs'))
-        log('theme: toolbarBtns=' + document.querySelectorAll('.reader-top button').length)
+        log('theme: toolbarBtns=' + document.querySelectorAll('.reader button').length)
         dumpErrors()
 
         // ---- 5. 侧栏（目录 / 笔记 / 搜索 三标签）----
-        const btn = [...document.querySelectorAll('.reader-top button')].find((b) => b.textContent === '面板')
+        const btn = [...document.querySelectorAll('.reader button')].find((b) => b.textContent === '目录')
         log('panel button found=' + !!btn)
         btn?.click()
         await new Promise((r) => setTimeout(r, 800))
