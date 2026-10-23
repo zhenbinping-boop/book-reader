@@ -4,7 +4,7 @@ android {
     namespace = "io.github.zhenbinpingboop.bookreader"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "io.github.zhenbinpingboop.bookreader"
+        applicationId "io.github.zhenbinpingboop.bookreader.ink"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 20002

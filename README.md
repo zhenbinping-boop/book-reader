@@ -230,10 +230,10 @@ python tools/browser_smoke.py http://localhost:5173/dev-bookmark.html
 ## Android Alpha 安装包
 
 [下载 v0.2.0-alpha.2 古风书房版](https://github.com/zhenbinping-boop/book-reader/releases/tag/v0.2.0-alpha.2)。
-新版采用递增的 Android versionCode 和原 Alpha 签名，支持直接覆盖更新。
+新版在桌面显示为「阅读器·古风版」，使用独立应用 ID，可与旧版「阅读器」同时安装。旧版签名密钥未能找回，因此本次不覆盖旧应用；两个应用的数据独立，迁移步骤见下方。
 推送到 `main` 后，版本号尚未发布时，CI 会在完整验收、签名及版本校验通过后自动发布对应 APK；已发布的同版本安装包不会被覆盖。
 
-原生工程使用 Capacitor 8，应用 ID 为 `io.github.zhenbinpingboop.bookreader`。APK 内置网页、PDF worker、字体和 CMaps，无需联网即可导入和阅读。Android 10+，系统 WebView 140+；旧 WebView 会显示更新提示。
+原生工程使用 Capacitor 8，应用 ID 为 `io.github.zhenbinpingboop.bookreader.ink`（旧版为 `io.github.zhenbinpingboop.bookreader`）。APK 内置网页、PDF worker、字体和 CMaps，无需联网即可导入和阅读。Android 10+，系统 WebView 140+；旧 WebView 会显示更新提示。
 
 ```bash
 npm ci
@@ -242,6 +242,14 @@ npm run android:apk
 
 本地构建需要 JDK 21、Android SDK 36 和 Build Tools 36.0.0，输出 `android/app/build/outputs/apk/debug/app-debug.apk`。也可在 GitHub Actions 的 **Verify reader** 工作流下载 `book-reader-android-alpha` 构建产物：只有单元测试、浏览器验收和网页构建通过后才会构建 APK，并检查签名和离线资源。
 
-CI 使用仓库 Secret `ANDROID_DEBUG_KEYSTORE_BASE64` 中固定的 Alpha 测试签名，后续测试版保持同一签名并递增 `versionCode`，可覆盖安装。请保留该 Secret；本机自动生成的 debug 签名不一定相同。Alpha 不是商店正式签名版本，正式发布前需规划长期签名。APK 更新需要下载安装新包，网页部署不会自动替换已安装 APK 的代码。
+CI 使用仓库 Secret `ANDROID_DEBUG_KEYSTORE_BASE64` 中固定的古风版 Alpha 测试签名，并以 `android/alpha-signing-certificate.sha256` 固定证书指纹。该签名与旧版 `v0.2.0-alpha.1` 不同；从本次古风版开始，后续古风版保持同一应用 ID、签名并递增 `versionCode`，支持覆盖更新。请保留该 Secret；本机自动生成的 debug 签名不一定相同。Alpha 不是商店正式签名版本，正式发布前需规划长期签名。APK 更新需要下载安装新包，网页部署不会自动替换已安装 APK 的代码。
 
 首次安装 APK 时，浏览器/PWA 的本地书库不会自动迁入；先在原版导出包含书籍的完整备份，再到 APK 的备份面板恢复。APK 中的备份与 Markdown 导出通过系统分享面板保存或发送。卸载前请备份。
+
+### 从旧版迁移到古风版
+
+1. 保留旧版「阅读器」，打开「备份与恢复」，勾选包含原文件后导出备份 `.json`（旧版可能标为「连 PDF 原文件一起导出」）。
+2. 安装新版「阅读器·古风版」，进入「设置 → 导出备份 / 恢复备份」，选择刚导出的文件并确认恢复。
+3. 核对书籍、阅读进度、书签及笔记；若未包含原文件，重新导入同一书籍文件。确认迁移完整前请保留旧应用。
+
+两个应用不会自动共享本地书库，安装新版不会覆盖或删除旧版数据。
