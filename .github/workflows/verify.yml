@@ -95,6 +95,7 @@ jobs:
         run: ./gradlew --no-daemon assembleDebug lintDebug
       - name: Verify APK signature and bundled resources
         run: |
+          set -euo pipefail
           mkdir -p apk
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs android/app/build/outputs/apk/debug/app-debug.apk | tee apk/SIGNATURE.txt
           python tools/check_android_apk.py android/app/build/outputs/apk/debug/app-debug.apk --aapt "$ANDROID_HOME/build-tools/36.0.0/aapt" --signature-report apk/SIGNATURE.txt
