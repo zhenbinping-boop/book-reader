@@ -229,6 +229,10 @@ python tools/browser_smoke.py http://localhost:5173/dev-bookmark.html
 
 ## Android Alpha 安装包
 
+[下载 v0.2.0-alpha.2 古风书房版](https://github.com/zhenbinping-boop/book-reader/releases/tag/v0.2.0-alpha.2)。
+新版采用递增的 Android versionCode 和原 Alpha 签名，支持直接覆盖更新。
+推送到 `main` 后，版本号尚未发布时，CI 会在完整验收、签名及版本校验通过后自动发布对应 APK；已发布的同版本安装包不会被覆盖。
+
 原生工程使用 Capacitor 8，应用 ID 为 `io.github.zhenbinpingboop.bookreader`。APK 内置网页、PDF worker、字体和 CMaps，无需联网即可导入和阅读。Android 10+，系统 WebView 140+；旧 WebView 会显示更新提示。
 
 ```bash

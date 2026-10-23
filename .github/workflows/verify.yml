@@ -58,6 +58,8 @@ jobs:
 
   android:
     needs: verify
+    permissions:
+      contents: write
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -93,10 +95,11 @@ jobs:
         run: ./gradlew --no-daemon assembleDebug lintDebug
       - name: Verify APK signature and bundled resources
         run: |
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose android/app/build/outputs/apk/debug/app-debug.apk
-          python tools/check_android_apk.py android/app/build/outputs/apk/debug/app-debug.apk
           mkdir -p apk
-          cp android/app/build/outputs/apk/debug/app-debug.apk apk/book-reader-v0.2.0-alpha.1.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs android/app/build/outputs/apk/debug/app-debug.apk | tee apk/SIGNATURE.txt
+          python tools/check_android_apk.py android/app/build/outputs/apk/debug/app-debug.apk --aapt "$ANDROID_HOME/build-tools/36.0.0/aapt" --signature-report apk/SIGNATURE.txt
+          reader_version="$(node -p "require('./package.json').version")"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "apk/book-reader-v${reader_version}.apk"
           cd apk
           sha256sum *.apk > SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
@@ -105,6 +108,36 @@ jobs:
           path: apk/
           if-no-files-found: error
           retention-days: 90
+      - name: Publish versioned Android download
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          reader_version="$(node -p "require('./package.json').version")"
+          reader_tag="v${reader_version}"
+          if reader_state="$(gh release view "$reader_tag" --json isDraft,targetCommitish --jq '[.isDraft,.targetCommitish]|@tsv' 2>/dev/null)"; then
+            read -r reader_draft reader_target <<< "$reader_state"
+            if [[ "$reader_draft" != "true" ]]; then
+              echo "Version $reader_tag is already published; increment the app version for a new release."
+              exit 0
+            fi
+            if [[ "$reader_target" != "$GITHUB_SHA" ]]; then
+              echo "Draft belongs to another commit; refusing to replace its assets."
+              exit 1
+            fi
+          else
+            reader_flags=(--draft --target "$GITHUB_SHA" --title "阅读器 $reader_tag")
+            if [[ "$reader_version" == *-* ]]; then reader_flags+=(--prerelease); fi
+            if [[ -f "releases/$reader_tag.md" ]]; then
+              reader_flags+=(--notes-file "releases/$reader_tag.md")
+            else
+              reader_flags+=(--generate-notes)
+            fi
+            gh release create "$reader_tag" "${reader_flags[@]}"
+          fi
+          gh release upload "$reader_tag" "apk/book-reader-v${reader_version}.apk" apk/SHA256SUMS.txt apk/SIGNATURE.txt --clobber
+          gh release edit "$reader_tag" --draft=false
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
