@@ -26,8 +26,35 @@ jobs:
         run: npm run test:unit
       - name: Browser acceptance (isolated profile)
         run: npm run test:acceptance
-      - name: Production build
-        run: npm run build
+      - name: Production build for GitHub Pages
+        run: npm run build -- --base=/book-reader/ --emptyOutDir
+      - name: Upload tested website
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist
+
+  pages:
+    needs: verify
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Deploy tested website
+        id: deployment
+        uses: actions/deploy-pages@v4
 
   android:
     needs: verify

@@ -57,6 +57,10 @@ npm run android:sync
 - 生产离线实测：断网刷新、首次导入并打开 PDF / TXT / EPUB；预缓存包含山景、书封与宋体。
 - Android 工程通过资源同步；本轮没有编译新 APK。安卓系统选词菜单、真实选区手柄、软键盘与覆盖安装仍需新测试包真机验收。
 
+## 网页发布
+
+`Verify reader` 工作流在验收通过后上传已测试的站点构建，由独立 `pages` job 自动发布。仓库 Pages 使用 GitHub Actions 来源；`github-pages` 环境允许 `main` 部署。网页不会再依赖手工更新 `gh-pages` 分支，也不必等待 Android 编译。
+
 ## 实际界面
 
 [手机书架](docs/ui/shelf-mobile.png) · [阅读页](docs/ui/reader-mobile.png) · [笔记面板](docs/ui/notes-mobile.png) · [设置页](docs/ui/settings-mobile.png)

@@ -102,6 +102,11 @@ npm run build
 构建产物是纯静态文件，可直接托管在 GitHub Pages / Cloudflare Pages / 对象存储上。
 部署到子路径时用 `npm run build -- --base=/book-reader/`；根路径用默认值即可 —— manifest 与 `start_url` 都写了相对路径，两种都成立。
 
+### 网页自动发布
+
+推送到 `main` 后，GitHub Actions 先运行单元测试、浏览器验收及 `/book-reader/` 子路径生产构建，全部通过后自动部署到 GitHub Pages。
+网页部署与 Android 构建分别依赖验收，网页无需等待 APK 编译。PR 和其他分支不会部署正式网页。
+
 ### 装到手机
 
 产物上线后，用手机浏览器打开该网址：
