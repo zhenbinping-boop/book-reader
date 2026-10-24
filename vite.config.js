@@ -16,10 +16,11 @@ async function optionalReact() {
 }
 
 export default defineConfig(async ({ mode }) => {
+  const nativeBuild = mode === 'android' || mode === 'native'
   const plugins = [
     ...(await optionalReact()),
     VitePWA({
-      disable: mode === 'android',
+      disable: nativeBuild,
       registerType: 'autoUpdate',
       includeAssets: ['icon-192.png', 'icon-512.png'],
       manifest: {
@@ -86,7 +87,7 @@ export default defineConfig(async ({ mode }) => {
       watch: { ignored: ['**/.tmp/**', '**/dist/**', '**/samples/**'] },
     },
     build: {
-      outDir: mode === 'android' ? 'dist-android' : 'dist',
+      outDir: nativeBuild ? 'dist-android' : 'dist',
       target: 'es2022',
       chunkSizeWarningLimit: 1500,
     },

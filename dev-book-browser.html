@@ -1,0 +1,105 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>寻书与下载入库验收</title>
+<style>body{margin:0}#host{position:relative;width:390px;height:844px;overflow:auto}#log{position:fixed;left:430px;top:0;right:0;bottom:0;overflow:auto;white-space:pre-wrap;background:white;color:black;font:12px/1.7 monospace;padding:10px}</style></head><body><div id="host"></div><pre id="log"></pre><script type="module">
+import '/src/styles.css'
+import React from 'react'
+import { createRoot } from 'react-dom/client'
+import { Capacitor } from '@capacitor/core'
+import Dexie from 'dexie'
+import App from '/src/App.jsx'
+import FindBooks from '/src/components/FindBooks.jsx'
+import { db, getBook, getBlob, listBooks } from '/src/db.js'
+import { createDownloadInbox } from '/src/lib/bookDownloads.js'
+import { enqueueBookImport } from '/src/lib/bookBrowser.js'
+import { normalizeBookUrl } from '/src/lib/bookSources.js'
+
+let failed = 0
+const log = text => { document.querySelector('#log').textContent += text + '\n'; fetch('http://127.0.0.1:5178/log', { method: 'POST', body: text }).catch(() => {}) }
+const ok = (name, condition) => { if (!condition) failed++; log((condition ? 'ok  ' : 'BAD ') + name) }
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+const until = async fn => { const end = performance.now() + 15000; while (performance.now() < end) { const result = await fn(); if (result) return result; await sleep(25) } throw Error('等待超时: ' + fn.toString().slice(0, 120)) }
+const host = document.querySelector('#host')
+const fill = (el, value) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, value); el.dispatchEvent(new Event('input', { bubbles: true })) }
+const fixtureEvent = name => ({ id: 'test-browser', path: `/cache/inappbrowser-downloads/${name}`, fileName: name, sourceUrl: 'https://books.example/download', returnUrl: 'https://books.example/book' })
+window.addEventListener('error', event => log('WINDOW ERROR: ' + event.message))
+window.addEventListener('unhandledrejection', event => log('REJECTION: ' + (event.reason?.stack || event.reason)))
+let root
+try {
+  await db.delete()
+  const previous = new Dexie('book-reader')
+  previous.version(3).stores({ books: '++id, format, addedAt, lastReadAt, fileHash', blobs: 'id', progress: 'bookId', bookmarks: '++id, bookId, page', highlights: '++id, bookId, page, createdAt', textIndex: 'bookId' })
+  await previous.open()
+  await previous.books.put({ id: 77, title: '原有藏书', format: 'txt', fileHash: 'legacy-hash' })
+  await previous.blobs.put({ id: 77, blob: new Blob(['原有书籍正文']) })
+  await previous.progress.put({ bookId: 77, page: 3, started: true, charOffset: 28 })
+  await previous.highlights.put({ id: 88, bookId: 77, page: 2, note: '升级前的笔记' })
+  previous.close()
+  await db.open()
+  ok('v3 书库升级后保留原文件、进度和批注，仅新增下载表', (await db.books.get(77)).fileHash === 'legacy-hash' && (await db.blobs.get(77)).blob.size > 0 && (await db.progress.get(77)).charOffset === 28 && (await db.highlights.get(88)).note === '升级前的笔记' && await db.downloads.count() === 0)
+  await db.transaction('rw', [db.books, db.blobs, db.progress, db.highlights], async () => { await db.books.clear(); await db.blobs.clear(); await db.progress.clear(); await db.highlights.clear() })
+  localStorage.removeItem('reader.bookSources'); localStorage.removeItem('reader.bookHistory')
+  history.replaceState(null, '', '#/discover')
+  root = createRoot(host); root.render(React.createElement(App))
+  await until(() => host.querySelector('.find-books'))
+  ok('寻书是可直达的第四个导航页', host.querySelectorAll('.ink-navigation a').length === 4 && host.querySelector('[href="#/discover"]').getAttribute('aria-current') === 'page')
+  ok('网页版明确说明原生能力边界，不用 iframe 假装接管第三方下载', !!host.querySelector('.find-platform-note') && !host.querySelector('iframe') && host.querySelector('.book-source-open').disabled)
+  root.unmount(); root = createRoot(host)
+
+  const files = new Map()
+  for (const name of ['sample.epub', 'sample.pdf', 'sample-utf8.txt']) files.set(name, await (await fetch(`/samples/${name}`)).blob())
+  files.set('login.txt', new Blob(['<!DOCTYPE html><html>登录后下载</html>'], { type: 'text/html' }))
+  const cleanups = [], notices = [], opened = []
+  let failRead = false
+  const deps = { list: () => db.downloads.toArray(), save: row => db.downloads.put(row), remove: id => db.downloads.delete(id),
+    loadFile: async row => { if (failRead) throw Error('模拟文件暂时无法读取'); return files.get(row.fileName) }, importFile: enqueueBookImport,
+    cleanup: async row => cleanups.push(row.id), onImported: row => notices.push(row.bookId) }
+  const inbox = createDownloadInbox(deps)
+  const openBrowser = async url => { opened.push(normalizeBookUrl(url)); return { id: 'test-browser' } }
+  root.render(React.createElement(FindBooks, { inbox, availability: () => 'available', openBrowser }))
+  await until(() => host.querySelector('.book-source-open'))
+  host.querySelector('[aria-label="在内置浏览器打开好读"]').click()
+  await until(() => opened.length === 1)
+  ok('书源按钮向原生适配层传递真实网站地址', opened[0] === 'https://haodoo.net/')
+  fill(host.querySelector('[aria-label="书源网址"]'), 'books.example')
+  await sleep(30); host.querySelector('.find-address').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+  await until(() => opened.length === 2)
+  ok('网址栏支持不带协议的有效网址', opened[1] === 'https://books.example/')
+  host.querySelector('.find-add-source').click(); await until(() => host.querySelector('.ink-form'))
+  const inputs = host.querySelectorAll('.ink-form input'); fill(inputs[0], '私人书源'); fill(inputs[1], 'my-books.example')
+  await sleep(30); host.querySelector('.ink-form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+  await until(() => host.querySelector('[aria-label="在内置浏览器打开私人书源"]'))
+  ok('自定义书源真实持久化', JSON.parse(localStorage.getItem('reader.bookSources'))[0].url === 'https://my-books.example/')
+  await until(() => !history.state?.__backClose)
+
+  for (const name of ['sample.epub', 'sample.pdf', 'sample-utf8.txt']) {
+    const result = await inbox.receive(fixtureEvent(name))
+    const book = await getBook(result.bookId)
+    ok(`${name} 下载回执通过实际解析和事务入库`, result.status === 'completed' && !!book && (await getBlob(book.id)).size === files.get(name).size)
+  }
+  const before = await db.books.count()
+  const duplicate = await inbox.receive({ ...fixtureEvent('sample.epub'), path: '/cache/inappbrowser-downloads/second-copy.epub' })
+  ok('下载同一本书保留原 ID 与笔记，不生成重复条目', duplicate.resultStatus === 'duplicate' && await db.books.count() === before)
+  await inbox.receive(fixtureEvent('login.txt'))
+  ok('伪装成 TXT 的登录网页被拒绝，未污染真实书架', await db.books.count() === before && inbox.getSnapshot().find(row => row.fileName === 'login.txt').status === 'failed')
+
+  failRead = true
+  const pendingEvent = { ...fixtureEvent('sample-utf8.txt'), path: '/cache/inappbrowser-downloads/retry.txt' }
+  await inbox.receive(pendingEvent)
+  ok('暂时读取失败保留下载文件和重试入口', inbox.getSnapshot().find(row => row.id === pendingEvent.path).retryable && !cleanups.includes(pendingEvent.path))
+  failRead = false
+  await inbox.retry(pendingEvent.path)
+  ok('不重新联网即可重试入库，且继续查重', inbox.getSnapshot().find(row => row.id === pendingEvent.path).resultStatus === 'duplicate')
+  await until(() => host.querySelectorAll('.book-download.status-completed').length === 5)
+  ok('下载列表提供真实的立即阅读入口', [...host.querySelectorAll('.book-download-actions button')].some(button => button.textContent.includes('立即阅读')))
+  const completed = inbox.getSnapshot().find(row => row.status === 'completed')
+  await inbox.dismiss(completed.id)
+  ok('移除下载记录不删除书籍', await db.books.count() === before && !(await db.downloads.get(completed.id)))
+  const recovered = createDownloadInbox(deps)
+  await recovered.recover()
+  ok('重新创建收件箱后保留下载记录与书籍身份', recovered.getSnapshot().filter(row => row.status === 'completed').length === 4 && (await listBooks()).length === 3)
+  ok('只有书籍事务成功后才清理临时文件并通知', cleanups.length === 6 && notices.length === 5)
+  if (host.scrollWidth > host.clientWidth + 1) log('OVERFLOW: ' + JSON.stringify({scrollWidth:host.scrollWidth,clientWidth:host.clientWidth,elements:[...host.querySelectorAll('*')].filter(el => el.getBoundingClientRect().right > host.getBoundingClientRect().left + host.clientWidth + 1).slice(0, 15).map(el => ({tag:el.tagName,cls:el.className,width:el.getBoundingClientRect().width,right:el.getBoundingClientRect().right}))}))
+  ok('390px 手机布局不产生横向溢出', host.scrollWidth <= host.clientWidth + 1)
+  log('NOTE: Native transport is simulated here; WebView cookies, redirects and filesystem URLs require device acceptance.')
+} catch (error) { failed++; log('THROWN: ' + (error.stack || error)) }
+finally { root?.unmount(); log('ALL DONE ' + (failed ? 'FAIL ' + failed : 'PASS')) }
+</script></body></html>

@@ -24,7 +24,7 @@ try{
  await db.delete();await db.open();localStorage.removeItem('book-reader:prefs');history.replaceState(null,'','#/')
  root=createRoot(host);root.render(React.createElement(App))
  await until(()=>host.querySelector('.ink-navigation'))
- ok('书架、笔记、设置三个真实导航入口',host.querySelectorAll('.ink-navigation a').length===3)
+ ok('书架、寻书、笔记、设置四个真实导航入口',host.querySelectorAll('.ink-navigation a').length===4)
  ok('空书房保留导入引导',host.querySelector('.empty').textContent.includes('还没有书'))
  const content='余忆童稚时，能张目对日，明察秋毫。见藐小之物，必细察其纹理，故时有物外之趣。'.repeat(50)
  const transfer=new DataTransfer()

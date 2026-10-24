@@ -56,6 +56,27 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
+  ios:
+    needs: verify
+    if: github.event_name != 'pull_request'
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Prepare iOS offline app and native browser
+        run: npm run ios:sync
+      - name: Compile iOS simulator app without signing
+        run: >-
+          xcodebuild -project ios/App/App.xcodeproj -scheme App
+          -configuration Debug -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath "$RUNNER_TEMP/reader-ios"
+          CODE_SIGNING_ALLOWED=NO build
+
   signing:
     runs-on: ubuntu-latest
     timeout-minutes: 5

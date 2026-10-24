@@ -28,7 +28,7 @@
       const IN_TARGET = location.pathname.endsWith('dev-txt.html')
       const log = (m) => {
         document.getElementById('log').innerHTML += `<div>${m}</div>`
-        if (IN_TARGET) { try { fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true }) } catch {} }
+        if (IN_TARGET) { try { fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true }).catch(() => {}) } catch {} }
       }
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
       const dump = () => window.__errs.forEach((e) => log(e))

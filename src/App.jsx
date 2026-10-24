@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import Shelf from './components/Shelf'
 import BackupPanel from './components/BackupPanel'
 import { listBooks, deleteBook, getBook } from './db'
-import { importFile } from './lib/importer'
+import { enqueueBookImport, setupBookBrowser } from './lib/bookBrowser'
 import { backfillHashes } from './lib/backup'
 import { useHashRoute, goShelf } from './hooks/useHashRoute'
 import useBackClose from './hooks/useBackClose'
@@ -32,6 +32,21 @@ function ReaderApp() {
   const refresh = useCallback(() => {
     listBooks().then(setBooks)
   }, [])
+
+  useEffect(() => {
+    const imported = ({ detail }) => {
+      refresh()
+      setNotice(detail.resultStatus === 'duplicate' ? `《${detail.title}》已在书架，没有重复添加` : `《${detail.title}》已加入书架`)
+    }
+    const failed = ({ detail }) => setNotice(detail)
+    window.addEventListener('reader:book-imported', imported)
+    window.addEventListener('reader:browser-error', failed)
+    setupBookBrowser().catch(error => setNotice(error?.message || '寻书功能初始化失败'))
+    return () => {
+      window.removeEventListener('reader:book-imported', imported)
+      window.removeEventListener('reader:browser-error', failed)
+    }
+  }, [refresh])
 
   useEffect(() => {
     if (route.name !== 'read') refresh()
@@ -72,7 +87,7 @@ function ReaderApp() {
     const notes = []
     for (const file of files) {
       try {
-        const r = await importFile(file)
+        const r = await enqueueBookImport(file)
         if (r.status === 'linked') {
           notes.push(`《${r.title}》的文件已接回，原有笔记和进度都还在`)
         } else if (r.status === 'duplicate') {

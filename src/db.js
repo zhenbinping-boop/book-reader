@@ -38,6 +38,10 @@ db.version(3).stores({
   textIndex: 'bookId',
 })
 
+// Download transport receipts are device-local and excluded from book backups.
+// Existing book/annotation stores are inherited unchanged from v3.
+db.version(4).stores({ downloads: 'id, status, createdAt' })
+
 /** 高亮可选颜色。顺序即 UI 中色块的排列顺序 */
 export const HIGHLIGHT_COLORS = ['yellow', 'green', 'blue', 'pink']
 
