@@ -9,6 +9,7 @@ import BookCover from './BookCover'
 import BookDetailsDialog from './BookDetailsDialog'
 import LibraryNotes from './LibraryNotes'
 import LibrarySettings from './LibrarySettings'
+import FindBooks from './FindBooks'
 import useBackClose from '../hooks/useBackClose'
 
 export const FORMATS = [
@@ -40,7 +41,7 @@ export default function Shelf({ books, onImport, onDelete, onOpenBackup, onBooks
   const groups = [...new Set(books.map(b => b.collection).filter(Boolean))].sort()
   const recent = [...books].filter(b => !b.missingFile && b.progress?.started === true && readingState(b) !== 'finished')
     .sort((a, b) => (b.lastReadAt || 0) - (a.lastReadAt || 0))[0]
-  const titles = { shelf: '我的书架', notes: '读书笔记', settings: '设置' }
+  const titles = { shelf: '我的书架', discover: '寻书', notes: '读书笔记', settings: '设置' }
 
   return <div className={`app ink-shell page-${page}`}>
     <div className="ink-page-backdrop" aria-hidden="true" />
@@ -55,6 +56,7 @@ export default function Shelf({ books, onImport, onDelete, onOpenBackup, onBooks
           </button>
           {adding && <div className="add-formats ink-import-menu">
             <h2>添一卷新书</h2>
+            <button className="btn online-import-entry" onClick={() => { closeAdd(); location.hash = '#/discover' }}><b>寻书</b><span>在书源网站找书</span><ArrowRight size={15} /></button>
             {FORMATS.map(f => <button className="fmt-btn" key={f.key} data-fmt={f.key} onClick={() => openPicker(f.accept)}><b>{f.label}</b><span>{f.tip}</span><ArrowRight size={15} /></button>)}
             <div className="add-hint">也可以把文件直接拖进书架</div>
           </div>}
@@ -66,6 +68,7 @@ export default function Shelf({ books, onImport, onDelete, onOpenBackup, onBooks
     <main className="ink-main" id="main-content">
       {page === 'settings' ? <LibrarySettings onPickFile={format => openPicker(FORMATS.find(f => f.key === format)?.accept)} onOpenBackup={onOpenBackup} /> :
         page === 'notes' ? <LibraryNotes books={books} /> :
+        page === 'discover' ? <FindBooks /> :
         <div className="shelf" onDragOver={e => { e.preventDefault(); setOver(true) }} onDragLeave={() => setOver(false)} onDrop={e => { e.preventDefault(); setOver(false); pick(e.dataTransfer?.files) }}>
           <AnimatePresence initial={false}>{searching && <motion.div className="library-search" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
             <Search size={19} /><input autoFocus type="search" aria-label="搜索书名、作者或分组" placeholder="寻一卷好书…" value={query} onChange={e => setQuery(e.target.value)} /><IconButton label="关闭搜索" onClick={() => { setSearching(false); setQuery('') }}><X size={17} /></IconButton>

@@ -11,6 +11,7 @@ export function useHashRoute() {
 
   const m = hash.match(/^#\/read\/(\d+)/)
   if (m) return { name: 'read', id: Number(m[1]) }
+  if (hash.startsWith('#/discover')) return { name: 'discover' }
   if (hash.startsWith('#/notes')) return { name: 'notes' }
   if (hash.startsWith('#/settings')) return { name: 'settings' }
   return { name: 'shelf' }

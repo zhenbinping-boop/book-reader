@@ -35,7 +35,7 @@
         document.getElementById('log').innerHTML += `<div>${m}</div>`
         if (!IN_TARGET) return
         try {
-          fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true })
+          fetch(ENDPOINT, { method: 'POST', body: String(m), keepalive: true }).catch(() => {})
         } catch {}
       }
       const dumpErrors = () => window.__errs.forEach((e) => log(e))
