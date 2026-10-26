@@ -2,8 +2,9 @@ import { BookOpen, Compass, NotebookPen, Settings2, X } from 'lucide-react'
 import { motion, useReducedMotion } from 'motion/react'
 import useDialogFocus from '../hooks/useDialogFocus'
 
-export function Seal({ children = '闲读', className = '' }) {
-  return <span className={`ink-seal ${className}`} aria-hidden="true">{children}</span>
+export function Seal({ children = '栖读', className = '' }) {
+  const characters = typeof children === 'string' ? [...children] : [children]
+  return <span className={`ink-seal ${className}`} aria-hidden="true">{characters.map((character, index) => <span className="ink-seal-char" key={index}>{character}</span>)}</span>
 }
 
 export function SectionTitle({ children, aside }) {

@@ -1,6 +1,8 @@
-# book-reader
+# 栖读 · book-reader
 
-电子书阅读器。**本地解析与存储、无后端、无阅读器账号** —— 支持静态网页 / PWA，以及 Capacitor Android / iOS 原生工程。原生版新增内置浏览器寻书，下载完成后自动加入本地书架；打开书源时会访问用户选择的网站。
+栖读，取意「一卷在手，心有所栖」。**本地解析与存储、无后端、无阅读器账号** —— 支持静态网页 / PWA，以及 Capacitor Android / iOS 原生工程。原生版新增内置浏览器寻书，下载完成后自动加入本地书架；打开书源时会访问用户选择的网站。
+
+品牌标识为朱砂藏书印，使用线装书与屋檐的合形图案。图标来源、移动端安全区及重新生成方法见 [品牌与图标](docs/BRAND.md)。
 
 内置寻书首版的构建方式、下载适配与真机验收边界见 [内置寻书说明](docs/BOOK_BROWSER.md)。iOS 原生工程新增，原来的主屏幕 PWA 仍是网页版，需单独构建安装原生 App。
 
@@ -231,8 +233,8 @@ python tools/browser_smoke.py http://localhost:5173/dev-bookmark.html
 
 ## Android Alpha 安装包
 
-[下载 v0.2.0-alpha.2 古风书房版](https://github.com/zhenbinping-boop/book-reader/releases/tag/v0.2.0-alpha.2)。
-新版在桌面显示为「阅读器·古风版」，使用独立应用 ID，可与旧版「阅读器」同时安装。旧版签名密钥未能找回，因此本次不覆盖旧应用；两个应用的数据独立，迁移步骤见下方。
+[下载栖读 v0.3.0-alpha.2](https://github.com/zhenbinping-boop/book-reader/releases/tag/v0.3.0-alpha.2)。
+新版在桌面显示为「栖读」，沿用「阅读器·古风版」的应用 ID 和固定签名；更新时可覆盖古风版。它与更早的「阅读器」应用 ID 不同，两个应用的数据独立，从早期阅读器迁移的方法见下方。
 推送到 `main` 后，版本号尚未发布时，CI 会在完整验收、签名及版本校验通过后自动发布对应 APK；已发布的同版本安装包不会被覆盖。
 
 原生工程使用 Capacitor 8，应用 ID 为 `io.github.zhenbinpingboop.bookreader.ink`（旧版为 `io.github.zhenbinpingboop.bookreader`）。APK 内置网页、PDF worker、字体和 CMaps，无需联网即可导入和阅读。Android 10+，系统 WebView 140+；旧 WebView 会显示更新提示。
@@ -251,7 +253,7 @@ CI 使用仓库 Secret `ANDROID_DEBUG_KEYSTORE_BASE64` 中固定的古风版 Alp
 ### 从旧版迁移到古风版
 
 1. 保留旧版「阅读器」，打开「备份与恢复」，勾选包含原文件后导出备份 `.json`（旧版可能标为「连 PDF 原文件一起导出」）。
-2. 安装新版「阅读器·古风版」，进入「设置 → 导出备份 / 恢复备份」，选择刚导出的文件并确认恢复。
+2. 安装新版「栖读」，进入「设置 → 导出备份 / 恢复备份」，选择刚导出的文件并确认恢复。
 3. 核对书籍、阅读进度、书签及笔记；若未包含原文件，重新导入同一书籍文件。确认迁移完整前请保留旧应用。
 
 两个应用不会自动共享本地书库，安装新版不会覆盖或删除旧版数据。

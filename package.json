@@ -1,7 +1,7 @@
 {
   "name": "book-reader",
   "private": true,
-  "version": "0.3.0-alpha.1",
+  "version": "0.3.0-alpha.2",
   "type": "module",
   "scripts": {
     "postinstall": "node tools/patch_inappbrowser.mjs",
@@ -21,7 +21,8 @@
     "build:native": "vite build --mode native",
     "ios:sync": "npm run build:native && cap sync ios",
     "android:sync": "npm run build:android && cap sync android",
-    "android:apk": "npm run android:sync && cd android && ./gradlew assembleDebug"
+    "android:apk": "npm run android:sync && cd android && ./gradlew assembleDebug",
+    "icons": "node tools/make_icons.mjs"
   },
   "dependencies": {
     "@capacitor/android": "8.5.3",
@@ -44,7 +45,8 @@
     "node": ">=22.13.0"
   },
   "devDependencies": {
-    "@capacitor/cli": "8.5.3"
+    "@capacitor/cli": "8.5.3",
+    "sharp": "0.35.5"
   },
   "overrides": {
     "xcode": {

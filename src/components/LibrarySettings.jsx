@@ -25,7 +25,7 @@ export default function LibrarySettings({ onPickFile, onOpenBackup }) {
       <div className="gesture-hint"><Hand size={23} strokeWidth={1.2} /><span>双指缩放 · 点击显隐工具栏</span></div>
     </section>
     <section className="settings-section"><SectionTitle>备份与恢复</SectionTitle><p className="setting-help">书籍、进度、书签与笔记，妥善收藏。</p><button className="settings-row backup-entry" onClick={onOpenBackup}><Upload size={20} /><span>导出备份 / 恢复备份</span><ArrowDownToLine size={18} /><ChevronRight size={16} /></button><p className="setting-help">可选择包含原文件，完整迁移你的私人书房。</p></section>
-    <div className="settings-foot"><button onClick={() => { setPrefs(savePrefs(DEFAULT_PREFS)); setTip('已恢复默认阅读设置') }}>恢复默认设置</button><span>阅读器 · 本地阅读，书不出设备</span><small>v{__APP_VERSION__}</small></div>
+    <div className="settings-foot"><button onClick={() => { setPrefs(savePrefs(DEFAULT_PREFS)); setTip('已恢复默认阅读设置') }}>恢复默认设置</button><span>栖读 · 一卷在手，心有所栖</span><small>v{__APP_VERSION__}</small></div>
     <div className="settings-live-tip" aria-live="polite">{tip}</div>
   </div>
 }

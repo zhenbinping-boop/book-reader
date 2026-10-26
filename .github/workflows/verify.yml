@@ -176,7 +176,7 @@ jobs:
               exit 1
             fi
           else
-            reader_flags=(--draft --target "$GITHUB_SHA" --title "阅读器 $reader_tag")
+            reader_flags=(--draft --target "$GITHUB_SHA" --title "栖读 $reader_tag")
             if [[ "$reader_version" == *-* ]]; then reader_flags+=(--prerelease); fi
             if [[ -f "releases/$reader_tag.md" ]]; then
               reader_flags+=(--notes-file "releases/$reader_tag.md")

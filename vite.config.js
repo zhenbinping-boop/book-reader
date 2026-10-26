@@ -22,10 +22,10 @@ export default defineConfig(async ({ mode }) => {
     VitePWA({
       disable: nativeBuild,
       registerType: 'autoUpdate',
-      includeAssets: ['icon-192.png', 'icon-512.png'],
+      includeAssets: ['icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png', 'favicon-32.png'],
       manifest: {
-        name: '阅读器',
-        short_name: '阅读器',
+        name: '栖读',
+        short_name: '栖读',
         description: '本地导入 PDF、TXT、EPUB，离线阅读与标注',
         lang: 'zh-CN',
         // 全部用相对路径：manifest 在 /book-reader/manifest.webmanifest 时，
@@ -40,7 +40,7 @@ export default defineConfig(async ({ mode }) => {
           { src: 'icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: 'icon-512.png', sizes: '512x512', type: 'image/png' },
           {
-            src: 'icon-512.png',
+            src: 'icon-maskable-512.png',
             sizes: '512x512',
             type: 'image/png',
             purpose: 'maskable',

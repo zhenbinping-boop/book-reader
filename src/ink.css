@@ -31,7 +31,9 @@ select{padding:8px 28px 8px 12px;max-width:100%;font-size:13px}
 .btn-primary{color:#fffaf0;background:linear-gradient(110deg,#39795b,#265b46);border-color:#24533f;box-shadow:inset 0 1px 0 #ffffff25}
 .btn-primary:hover{background:#24583f;color:#fffaf0;border-color:#24533f}
 .btn-sm{font-size:12px;min-height:36px;padding:7px 12px}
-.ink-seal{display:inline-grid;place-items:center;vertical-align:middle;flex:none;width:22px;height:28px;border:1px solid var(--ink-cinnabar);border-radius:2px;color:var(--ink-cinnabar);font:10px/1.05 var(--font-display);writing-mode:vertical-rl;letter-spacing:2px;box-shadow:inset 0 0 0 2px var(--ui-surface),inset 0 0 0 3px currentColor;padding:3px}
+.ink-seal{position:relative;display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;box-sizing:border-box;vertical-align:middle;flex:none;width:28px;height:40px;padding:5px 4px;border:1px solid currentColor;border-radius:2px;color:var(--ink-cinnabar);font:12px/1 var(--font-display);writing-mode:horizontal-tb;letter-spacing:0;white-space:nowrap}
+.ink-seal::before{content:'';position:absolute;inset:2px;border:1px solid currentColor;border-radius:1px;pointer-events:none}
+.ink-seal-char{display:block;flex:none;width:1em;height:1em;line-height:1;text-align:center}
 .eyebrow{font-family:var(--font-display);font-size:13px;color:var(--ink-cinnabar);font-weight:600;letter-spacing:1px}
 .ink-shell{position:relative;isolation:isolate;height:100%;min-height:0;background:var(--ui-bg);overflow:hidden}
 .ink-page-backdrop{position:absolute;z-index:-1;inset:0;pointer-events:none;background:linear-gradient(#f8f2e6d9,#f8f2e6ad),url('/art/ink-landscape.webp') center bottom/cover no-repeat}
@@ -219,7 +221,7 @@ select{padding:8px 28px 8px 12px;max-width:100%;font-size:13px}
 .drawer{position:fixed;z-index:70;left:auto;right:0;top:0;bottom:0;width:min(460px,100%);height:auto;display:flex;flex-direction:column;background:var(--ui-surface);box-shadow:var(--shadow-3);border-left:1px solid var(--ui-border);padding:calc(env(safe-area-inset-top) + 16px) 20px calc(12px + env(safe-area-inset-bottom));overflow:hidden}
 .panel-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:13px;flex:none}
 .panel-title h2{display:flex;align-items:center;gap:10px;font:23px/1.5 var(--font-display);margin:0}
-.panel-title .ink-seal{width:18px;height:24px;font-size:8px;opacity:.8}
+.panel-title .ink-seal{width:24px;height:34px;font-size:10px;opacity:.8}
 .drawer-head{padding:0;border-bottom:1px solid var(--ui-border);display:flex;align-items:center;justify-content:space-between;flex:none;background:none}
 .tabs{display:flex;flex:1;align-items:center;gap:0}
 .tab{position:relative;display:flex;align-items:center;justify-content:center;gap:4px;flex:1;font:14px/1.4 var(--font-display);color:var(--ui-text);background:none;border:0;padding:12px 4px 14px;min-height:47px;border-radius:0}

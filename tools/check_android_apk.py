@@ -23,7 +23,7 @@ if args.aapt:
     assert package.group(1) == expected_app_id, 'Wrong Android application ID'
     assert package.group(2) == expected_code, 'Packaged versionCode does not match Gradle'
     assert package.group(3) == expected_version, 'Packaged versionName does not match package.json'
-    assert "application-label:'阅读器·古风版'" in info, 'Wrong launcher name'
+    assert "application-label:'栖读'" in info, 'Wrong launcher name'
     assert re.search(r"launchable-activity: name='io.github.zhenbinpingboop.bookreader.MainActivity'", info), 'Wrong launcher activity'
     print('Packaged app ID:', package.group(1))
     print('Packaged app version:', package.group(3), 'code:', package.group(2))
@@ -39,7 +39,7 @@ with zipfile.ZipFile(args.apk) as apk:
     names = apk.namelist()
     config = json.loads(apk.read('assets/capacitor.config.json'))
     assert config['appId'] == expected_app_id
-    assert config['appName'] == '阅读器·古风版'
+    assert config['appName'] == '栖读'
     assert not config.get('server', {}).get('url'), 'APK must use bundled resources'
     assert 'assets/public/index.html' in names
     assert 'assets/public/webview-error.html' in names
