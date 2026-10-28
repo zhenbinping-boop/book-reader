@@ -26,7 +26,7 @@ export function normalizeBookDetails(patch) {
   return { title, author: String(patch.author ?? '').trim().slice(0, 100),
     collection: String(patch.collection ?? '').trim().slice(0, 30),
     readingStatus: patch.readingStatus, artCover: !!patch.artCover,
-    ...(Number.isInteger(Number(patch.coverStyle)) && Number(patch.coverStyle) >= 0 && Number(patch.coverStyle) <= 3 ? { coverStyle: Number(patch.coverStyle) } : {}) }
+    ...(Number.isInteger(Number(patch.coverStyle)) && Number(patch.coverStyle) >= 0 && Number(patch.coverStyle) <= 7 ? { coverStyle: Number(patch.coverStyle) } : {}) }
 }
 
 export function normalizeNote(note, tags) {
@@ -36,7 +36,7 @@ export function normalizeNote(note, tags) {
 }
 
 export function coverVariant(book) {
-  if (Number.isInteger(book.coverStyle) && book.coverStyle >= 0 && book.coverStyle <= 3) return book.coverStyle
+  if (Number.isInteger(book.coverStyle) && book.coverStyle >= 0 && book.coverStyle <= 7) return book.coverStyle
   // A stable cover survives restoring a backup with different database IDs.
   return [...String(book.fileHash || book.title || book.id)].reduce((n, c) => (n * 31 + c.codePointAt(0)) >>> 0, 0) % 4
 }

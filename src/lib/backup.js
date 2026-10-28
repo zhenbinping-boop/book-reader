@@ -395,7 +395,7 @@ export async function restoreBackup(data) {
 
         if (target) {
           const patch = {}
-          if (target.coverStyle == null && Number.isInteger(b.coverStyle) && b.coverStyle >= 0 && b.coverStyle <= 3) patch.coverStyle = b.coverStyle
+          if (target.coverStyle == null && Number.isInteger(b.coverStyle) && b.coverStyle >= 0 && b.coverStyle <= 7) patch.coverStyle = b.coverStyle
           if (b.collection && !target.collection) patch.collection = String(b.collection).slice(0, 30)
           if (!target.readingStatus && ['unread', 'reading', 'finished'].includes(b.readingStatus)) patch.readingStatus = b.readingStatus
           if (target.artCover == null && b.artCover) patch.artCover = true

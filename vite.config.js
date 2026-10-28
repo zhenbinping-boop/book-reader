@@ -24,8 +24,8 @@ export default defineConfig(async ({ mode }) => {
       registerType: 'autoUpdate',
       includeAssets: ['icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png', 'favicon-32.png'],
       manifest: {
-        name: '栖读',
-        short_name: '栖读',
+        name: '芸窗',
+        short_name: '芸窗',
         description: '本地导入 PDF、TXT、EPUB，离线阅读与标注',
         lang: 'zh-CN',
         // 全部用相对路径：manifest 在 /book-reader/manifest.webmanifest 时，

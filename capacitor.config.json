@@ -1,6 +1,6 @@
 {
   "appId": "io.github.zhenbinpingboop.bookreader.ink",
-  "appName": "栖读",
+  "appName": "芸窗",
   "webDir": "dist-android",
   "server": {
     "androidScheme": "https",

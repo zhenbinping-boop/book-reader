@@ -48,6 +48,7 @@ export default function SidePanel({
   editNoteId,
   bookTitle,
   onNoteSaved,
+  onPreview,
 }) {
   const [tab, setTab] = useState(initialTab)
   const reduce = useReducedMotion()
@@ -155,7 +156,7 @@ export default function SidePanel({
             {outline.length === 0 ? (
               <div className="outline-empty">这本书没有目录信息</div>
             ) : (
-              outline.map((node) => <OutlineNode key={node.key} node={node} current={current} onJump={onJumpPage} />)
+              outline.map((node) => <OutlineNode key={node.key} node={node} current={current} onJump={onJumpPage} onPreview={onPreview} />)
             )}
           </div>
         )}
@@ -195,6 +196,7 @@ export default function SidePanel({
                       </span>
                       {b.snippet && <span className="bm-snippet">{b.snippet}</span>}
                     </button>
+                    {onPreview && <button className="peek-link" aria-label={`回看${label(b.page)}的书签`} onClick={() => onPreview({ index: b.page, offset: b.charOffset || 0 })}>回看</button>}
                     <button
                       className="bm-del"
                       title="删除这个书签"
@@ -225,6 +227,7 @@ export default function SidePanel({
                 sortedNotes.filter(h => noteFilter === 'all' || (noteFilter === 'thoughts' ? h.note : h.color === noteFilter)).map(h =>
                   <NoteCard key={h.id} highlight={h} autoEdit={h.id === editNoteId} label={label(h.page)} bookTitle={bookTitle}
                     onJump={() => onNoteJump ? onNoteJump(h) : onJumpPage(h.page + 1)}
+                    onPreview={onPreview && (() => onPreview({ index: h.page, offset: h.start?.offset ?? 0 }))}
                     onDelete={() => onMarkDelete(h)} onSaved={onNoteSaved} />)}
             </div>
           </>
@@ -247,8 +250,7 @@ export default function SidePanel({
               {!busy && tip && <div className="outline-empty">{tip}</div>}
               {!busy &&
                 hits?.map((h, i) => (
-                  <button
-                    key={`${h.page}-${h.from}-${i}`}
+                  <div className="peek-list-row" key={`${h.page}-${h.from}-${i}`}><button
                     className="hit-item"
                     data-page={h.page}
                     data-from={h.from}
@@ -257,7 +259,7 @@ export default function SidePanel({
                   >
                     <span className="hit-pg">{label(h.page)}</span>
                     <span className="hit-text">{h.snippet}</span>
-                  </button>
+                  </button>{onPreview && <button className="peek-link" aria-label={`回看${label(h.page)}的搜索结果`} onClick={() => onPreview({ index: h.page, offset: h.from || 0 })}>回看</button>}</div>
                 ))}
               {!busy && hits && hits.length >= 200 && (
                 <div className="outline-empty">结果较多，仅显示前 200 条</div>
@@ -270,11 +272,11 @@ export default function SidePanel({
   )
 }
 
-function OutlineNode({ node, current, onJump, depth = 0 }) {
+function OutlineNode({ node, current, onJump, onPreview, depth = 0 }) {
   const key = node.key ?? `${depth}-${node.title}`
   return (
     <div>
-      <button
+      <div className="peek-list-row"><button
         className={`outline-item${node.pageIndex === current - 1 ? ' active' : ''}`}
         style={{ paddingLeft: 16 + depth * 14 }}
         title={node.title}
@@ -282,9 +284,9 @@ function OutlineNode({ node, current, onJump, depth = 0 }) {
       >
         {node.pageIndex != null && <span className="pg">{node.pageIndex + 1}</span>}
         {node.title}
-      </button>
+      </button>{onPreview && node.pageIndex != null && <button className="peek-link" aria-label={`回看${node.title}`} onClick={() => onPreview({ index: node.pageIndex, offset: 0, fragment: node.fragment })}>回看</button>}</div>
       {node.children?.map((c) => (
-        <OutlineNode key={c.key} node={c} current={current} onJump={onJump} depth={depth + 1} />
+        <OutlineNode key={c.key} node={c} current={current} onJump={onJump} onPreview={onPreview} depth={depth + 1} />
       ))}
     </div>
   )

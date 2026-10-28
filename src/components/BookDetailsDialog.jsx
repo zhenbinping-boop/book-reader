@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { db } from '../db'
 import { BOOK_STATES, normalizeBookDetails, readingState, coverVariant } from '../lib/library'
 import { InkDialog } from './InkUI'
+import BookCover from './BookCover'
 
 export default function BookDetailsDialog({ book, onClose, onSaved, onDelete }) {
   const [draft, setDraft] = useState({ title: book.title, author: book.author || '',
@@ -29,7 +30,8 @@ export default function BookDetailsDialog({ book, onClose, onSaved, onDelete }) 
         {Object.entries(BOOK_STATES).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
       </select></label>
       {book.cover && <label className="check-row"><input type="checkbox" checked={draft.artCover} onChange={e => field('artCover', e.target.checked)} />使用古风书封</label>}
-      {(!book.cover || draft.artCover) && <label>书封样式<select value={draft.coverStyle} onChange={e => field('coverStyle', Number(e.target.value))}>{['青缎梅影', '竹影素笺', '远山淡墨', '碧落疏花'].map((name, i) => <option key={name} value={i}>{name}</option>)}</select></label>}
+      {(!book.cover || draft.artCover) && <label>书封样式<select value={draft.coverStyle} onChange={e => field('coverStyle', Number(e.target.value))}>{['青缎梅影', '竹影素笺', '远山淡墨', '碧落疏花', '黛青山岚', '竹影青缃', '古笺梅香', '朱砂云山'].map((name, i) => <option key={name} value={i}>{name}</option>)}</select></label>}
+      {(!book.cover || draft.artCover) && <div className="cover-choice-preview"><span>书封预览</span><span className="cover-choice-frame"><BookCover book={{ ...book, ...draft }} /></span></div>}
       {error && <p className="modal-error" role="alert">{error}</p>}
       <div className="form-actions"><button type="button" className="text-danger" onClick={() => { onClose(); onDelete(book) }}>删除图书</button>
         <button className="btn btn-primary" disabled={busy}>{busy ? '保存中…' : '保存修改'}</button></div>

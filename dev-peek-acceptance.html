@@ -1,0 +1,62 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>回读窗与滚动换章验收</title><style>body{margin:0}#host{width:390px;height:780px;position:relative;overflow:hidden}#log{position:fixed;left:410px;right:0;top:0;bottom:0;overflow:auto;white-space:pre-wrap;background:white;color:black;font:12px monospace}</style></head><body><div id="host"></div><pre id="log"></pre><script type="module">
+import '/src/styles.css'
+Object.defineProperty(navigator,'maxTouchPoints',{configurable:true,value:5})
+const native=window.matchMedia.bind(window);window.matchMedia=q=>{const m=native(q);if(q.includes('pointer: coarse')||q.includes('hover: none'))Object.defineProperty(m,'matches',{value:true});return m}
+const log=t=>{document.querySelector('#log').textContent+=t+'\n';fetch('http://127.0.0.1:5178/log',{method:'POST',body:t}).catch(()=>{})}
+let failed=0;const ok=(name,test)=>{if(!test)failed++;log((test?'ok  ':'BAD ')+name)}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));const until=async(fn,ms=12000)=>{const end=performance.now()+ms;while(performance.now()<end){const x=await fn();if(x)return x;await sleep(40)}throw Error('等待超时：'+fn.toString().slice(0,120))}
+const host=document.querySelector('#host');let root
+window.addEventListener('error',e=>log('WINDOW ERROR: '+e.message));window.addEventListener('unhandledrejection',e=>log('REJECTION: '+(e.reason?.stack||e.reason)))
+try{
+ const React=(await import('react')).default;const {createRoot}=await import('react-dom/client');const {db}=await import('/src/db.js');const {importFile}=await import('/src/lib/importer.js');const {savePrefs,loadPrefs}=await import('/src/lib/prefs.js')
+ const {coverVariant,normalizeBookDetails}=await import('/src/lib/library.js');const {buildBackup,restoreBackup}=await import('/src/lib/backup.js')
+ const Txt=(await import('/src/components/TxtReader.jsx')).default;const Epub=(await import('/src/components/EpubReader.jsx')).default;const Pdf=(await import('/src/components/PdfReader.jsx')).default
+ const sample=async(name,type)=>new File([await(await fetch('/samples/'+name)).arrayBuffer()],name,{type})
+ const long='这是一段书中文字，用来观察回看前后原本的阅读位置。'.repeat(110)
+ const txt=()=>new File(['第一章 初见\n'+long+'\n第二章 再见\n'+long+'\n第三章 归来\n'+long],'peek-test.txt',{type:'text/plain'})
+ const clear=async()=>{if(root){root.unmount();root=null;await sleep(120)}host.innerHTML='';window.getSelection().removeAllRanges();await db.delete();await db.open();localStorage.removeItem('book-reader:prefs')}
+ const mount=async(Reader,id,sel)=>{root=createRoot(host);root.render(React.createElement(Reader,{bookId:id,title:'回读测试',onBack:()=>{}}));await until(()=>host.querySelector(sel));await sleep(350)}
+ const fire=(el,type,points,remaining)=>{const changed=points.map(([x,y,id=1])=>({identifier:id,clientX:x,clientY:y,target:el}));const touches=remaining===undefined?(type==='touchend'||type==='touchcancel'?[]:changed):remaining;const event=new Event(type,{bubbles:true,cancelable:true});Object.defineProperties(event,{touches:{value:touches},changedTouches:{value:changed}});el.dispatchEvent(event)}
+ for(const [name,Reader,file,selector] of [['TXT',Txt,txt,'.txt-p'],['EPUB',Epub,()=>sample('sample.epub','application/epub+zip'),'.txt-p'],['PDF',Pdf,()=>sample('sample.pdf','application/pdf'),'.page-slot canvas']]){
+  await clear();savePrefs({readerFlow:'scroll'});const {id}=await importFile(await file());await mount(Reader,id,selector)
+  const view=host.querySelector(name==='PDF'?'.reader-view':'.txt-viewport');view.scrollTop=250;view.dispatchEvent(new Event('scroll',{bubbles:true}));await sleep(900)
+  const beforeScroll=view.scrollTop;const beforeChapter=host.querySelector('.txt-columns')?.dataset.chapter;const beforeProgress=await db.progress.get(id)
+  host.querySelector('[aria-label="打开回读窗"]').click();const peek=await until(()=>host.querySelector('[aria-label="回读窗"]'));await until(()=>peek.querySelector('.peek-paragraph, .peek-pdf-page canvas'))
+  ok(name+' 可打开独立回读窗',!!peek)
+  window.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));await sleep(100)
+  ok(name+' 回看和方向键不移动正文',view.scrollTop===beforeScroll && host.querySelector('.txt-columns')?.dataset.chapter===beforeChapter)
+  const afterProgress=await db.progress.get(id);ok(name+' 回看不写入预览位置',JSON.stringify(afterProgress)===JSON.stringify(beforeProgress))
+  peek.querySelector('[aria-label="回看下一处"]').click();await sleep(350)
+  ok(name+' 可在回读窗中切换内容',/2\s*\/|3\s*\//.test(peek.querySelector('.peek-controls span').textContent))
+  peek.querySelector('[aria-label="关闭回读窗"]').click();await until(()=>!host.querySelector('[aria-label="回读窗"]'));await sleep(200)
+  ok(name+' 关闭后阅读位置不变',view.scrollTop===beforeScroll && host.querySelector('.txt-columns')?.dataset.chapter===beforeChapter)
+  host.querySelector('[aria-label="阅读面板"]').click();const panel=await until(()=>host.querySelector('[aria-label="阅读面板"][role="dialog"]'));const link=await until(()=>panel.querySelector('.peek-link'));link.click()
+  const fromOutline=await until(()=>host.querySelector('[aria-label="回读窗"]'));await until(()=>fromOutline.querySelector('.peek-paragraph, .peek-pdf-page canvas'));ok(name+' 目录可直接回看而不跳转',view.scrollTop===beforeScroll);fromOutline.querySelector('[aria-label="关闭回读窗"]').click();await until(()=>!host.querySelector('[aria-label="回读窗"]'));await sleep(250)
+  host.querySelector('[aria-label="打开回读窗"]').click();const second=await until(()=>host.querySelector('[aria-label="回读窗"]'));await until(()=>second.querySelector('.peek-paragraph, .peek-pdf-page canvas'));second.querySelector('[aria-label="回看下一处"]').click();await sleep(400);const target=second.querySelector('.peek-controls span').textContent
+  second.querySelector('.peek-actions .btn-primary').click();await until(()=>!host.querySelector('[aria-label="回读窗"]'));await sleep(450)
+  ok(name+' 选择读这里后才跳转',name==='PDF'?host.querySelector('.scrub-num').textContent.includes(target.split('/')[0].trim()):Number(host.querySelector('.txt-columns').dataset.chapter)===Number(target.split('/')[0].trim())-1)
+ }
+ for(const [name,Reader,file] of [['TXT',Txt,txt],['EPUB',Epub,()=>sample('sample.epub','application/epub+zip')]]){
+  await clear();savePrefs({readerFlow:'scroll'});const {id}=await importFile(await file());await mount(Reader,id,'.txt-p');const view=host.querySelector('.txt-viewport');let before=Number(host.querySelector('.txt-columns').dataset.chapter)
+  view.scrollTop=view.scrollHeight;view.dispatchEvent(new Event('scroll',{bubbles:true}));await sleep(150)
+  fire(view,'touchstart',[[180,350]]);fire(view,'touchmove',[[180,220]]);fire(view,'touchend',[[180,220]])
+  await until(()=>Number(host.querySelector('.txt-columns').dataset.chapter)===before+1)
+  ok(name+' 章末再次上滑进入下一章',true)
+  await sleep(850);before=Number(host.querySelector('.txt-columns').dataset.chapter)
+  view.scrollTop=view.scrollHeight;view.dispatchEvent(new Event('scroll',{bubbles:true}));await sleep(100)
+  fire(view,'touchstart',[[180,350]]);fire(view,'touchmove',[[180,220],[200,220,2]]);fire(view,'touchend',[[180,220]])
+  await sleep(300);ok(name+' 双指手势不会自动换章',Number(host.querySelector('.txt-columns').dataset.chapter)===before)
+ }
+ ok('四款新增书封可保存', [4,5,6,7].every(i=>coverVariant({coverStyle:i})===i&&normalizeBookDetails({title:'书',readingStatus:'unread',coverStyle:i}).coverStyle===i))
+ savePrefs({readerBackground:'bamboo'});ok('阅读背景选择可持久化',loadPrefs().readerBackground==='bamboo')
+ savePrefs({readerBackground:'invalid'});ok('未知阅读背景回退素纸',loadPrefs().readerBackground==='plain')
+ root.unmount();root=null;await sleep(120)
+ const savedBook=(await db.books.toArray())[0];await db.books.update(savedBook.id,{coverStyle:7,artCover:true})
+ const snapshot=await buildBackup({includeFiles:true});await db.delete();await db.open();await restoreBackup(snapshot)
+ ok('新增书封样式可随完整备份恢复',(await db.books.toArray())[0]?.coverStyle===7)
+ await db.books.update((await db.books.toArray())[0].id,{coverStyle:null});await restoreBackup(snapshot)
+ ok('已有藏书缺少书封时可从备份补回',(await db.books.toArray())[0]?.coverStyle===7)
+ await clear();log(failed?`RESULT: FAIL (${failed})`:'RESULT: PASS')
+}catch(e){log('THROWN: '+(e.stack||e))}finally{if(root)root.unmount()}
+log('ALL DONE')
+</script></body></html>

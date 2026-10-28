@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { ThemePicker } from './LibrarySettings'
+import { ThemePicker, BackgroundPicker } from './LibrarySettings'
 import { X } from 'lucide-react'
 import {
   READER_SIZES,
@@ -57,7 +57,7 @@ export default function AppearancePanel({ values, theme, onChange, onReset, onCl
           </div>
 
           <div className="modal-body">
-            <div className="appearance-preview" data-reader-theme={theme} style={previewStyle}>
+            <div className="appearance-preview" data-reader-theme={theme} data-reader-background={values.readerBackground} style={previewStyle}>
               <p>他说，读书这件事，急不得。字要一个一个地看，日子要一天一天地过。</p>
               <p>窗外的光斜进来，落在书页上，像给每个字都镀了一层薄薄的边。</p>
             </div>
@@ -84,6 +84,7 @@ export default function AppearancePanel({ values, theme, onChange, onReset, onCl
             <section className="modal-sec">
               <h3>阅读主题</h3>
               <ThemePicker theme={theme} onChange={t => onChange({ readerTheme: t })} />
+              <h3>阅读背景</h3><BackgroundPicker value={values.readerBackground} onChange={b => onChange({ readerBackground: b })} />
               <p className="modal-note">
                 阅读时也可以直接在正文上双指开合来调字号（同样走这 7 档）。
                 主题按设备保存，跟随系统亮暗作为默认。设置只影响 TXT 这类流式排版的书，

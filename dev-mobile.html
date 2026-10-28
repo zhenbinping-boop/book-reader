@@ -653,26 +653,32 @@
           assertEq('缩放后仍在第 1 页', readNums()?.page, 1)
         }
 
-        // PDF 的显示面板：常亮 / 沉浸 / 主题（没有外观设置，版式书字号无意义）
+        // PDF 的显示面板：背景 / 常亮 / 沉浸 / 主题（版式书字号无意义）
         host.querySelector('.reader [aria-label="显示设置"]').click()
         ok('PDF ⋯ 打开显示面板', await until(() => document.querySelector('.display-menu'), 3000))
         const prows = () => [...document.querySelectorAll('.display-menu .display-row')]
-        assertEq('PDF 面板 3 行', prows().length, 3)
-        assertEq('PDF 第一行是常亮', prows()[0].textContent.includes('阅读时常亮'), true)
-        assertEq('PDF 第三行是主题', prows()[2].textContent.includes('阅读主题'), true)
+        const prow = (label) => prows().find((row) => row.textContent.includes(label))
+        assertEq('PDF 面板 4 行', prows().length, 4)
+        ok('PDF 面板包含常亮、沉浸、主题和背景', ['阅读时常亮', '全屏沉浸', '阅读主题', '阅读背景'].every((label) => prow(label)))
+        const backgroundBefore = host.querySelector('.reader').dataset.readerBackground
+        prow('阅读背景').click()
+        await sleep(200)
+        const backgroundAfter = host.querySelector('.reader').dataset.readerBackground
+        ok('PDF 可切换阅读背景', backgroundAfter !== backgroundBefore)
+        assertEq('PDF 背景偏好已持久化', JSON.parse(localStorage.getItem('book-reader:prefs')).readerBackground, backgroundAfter)
         assertEq(
           '主题行右值就是当前主题名',
-          Object.values(P.THEME_LABELS).some((l) => prows()[2].textContent.includes(l)),
+          Object.values(P.THEME_LABELS).some((l) => prow('阅读主题').textContent.includes(l)),
           true
         )
 
         const themeBefore = host.querySelector('.reader').dataset.readerTheme
-        prows()[2].click()
+        prow('阅读主题').click()
         await sleep(200)
         const themeAfter = host.querySelector('.reader').dataset.readerTheme
         ok(`点主题行即切换（${themeBefore} → ${themeAfter}）`, themeAfter !== themeBefore)
         assertEq('PDF 主题也写回 localStorage', JSON.parse(localStorage.getItem('book-reader:prefs')).readerTheme, themeAfter)
-        assertEq('主题行右值跟着更新', prows()[2].textContent.includes(P.THEME_LABELS[themeAfter]), true)
+        assertEq('主题行右值跟着更新', prow('阅读主题').textContent.includes(P.THEME_LABELS[themeAfter]), true)
         assertEq(
           'PDF 有主题色块按钮（和面板里的选择是同一个值）',
           host.querySelector('.reader-top .theme-dot')?.dataset.theme,
@@ -687,13 +693,13 @@
         const prevFsP = fsReq
         host.querySelector('.reader [aria-label="显示设置"]').click()
         await until(() => document.querySelector('.display-menu'), 2000)
-        prows()[1].click()
+        prow('全屏沉浸').click()
         await until(() => fsReq > prevFsP, 3000)
         await sleep(150)
         assertEq('PDF 沉浸生效', !!host.querySelector('.reader.immersive'), true)
         assertEq('PDF 沉浸藏掉进度条', getComputedStyle(host.querySelector('.reader-bottom')).display, 'none')
 
-        prows()[1].click()
+        prow('全屏沉浸').click()
         await sleep(200)
         assertEq('PDF 退出沉浸', !!host.querySelector('.reader.immersive'), false)
         assertEq('PDF 退出沉浸后进度条回来', getComputedStyle(host.querySelector('.reader-bottom')).display !== 'none', true)

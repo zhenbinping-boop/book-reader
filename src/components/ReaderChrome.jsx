@@ -1,4 +1,4 @@
-import { ArrowLeft, Bookmark, ChevronLeft, ChevronRight, List, MoreVertical, Undo2 } from 'lucide-react'
+import { ArrowLeft, Bookmark, BookOpenText, ChevronLeft, ChevronRight, List, MoreVertical, Undo2 } from 'lucide-react'
 import BookmarkButton from './BookmarkButton'
 
 export function ReaderHeader({ visible, title, subtitle, status, onBack, histDepth, onHistoryBack, bookmarked, onBookmark, onMenu, children }) {
@@ -12,10 +12,11 @@ export function ReaderHeader({ visible, title, subtitle, status, onBack, histDep
   </header>
 }
 
-export function ReaderActions({ onPanel, onBookmarks, onAppearance, onFlow, flow, pdf = false, onPrevious, onNext, children }) {
+export function ReaderActions({ onPanel, onBookmarks, onPreview, onAppearance, onFlow, flow, pdf = false, onPrevious, onNext, children }) {
   return <div className="ink-reader-actions">
     <button className="btn btn-sm reader-tool" onClick={onPanel} aria-label="阅读面板"><List size={23} strokeWidth={1.5} /><span>目录</span></button>
     <button className="btn btn-sm reader-tool" onClick={onBookmarks}><Bookmark size={23} strokeWidth={1.5} /><span>书签</span></button>
+    {onPreview && <button className="btn btn-sm reader-tool" onClick={onPreview} aria-label="打开回读窗"><BookOpenText size={23} strokeWidth={1.5} /><span>回看</span></button>}
     <button className="btn btn-sm reader-tool" onClick={onAppearance} aria-label={pdf ? 'PDF 外观设置' : '外观设置'}><span className="font-glyph" aria-hidden="true">Aa</span><span>{pdf ? '外观' : '字号'}</span></button>
     <div className="reader-turner"><div className="turner-buttons"><button className="btn btn-sm scrub-btn" aria-label="上一页" title="上一页" onClick={onPrevious}><ChevronLeft size={20} strokeWidth={1.5} /></button><button className="btn btn-sm scrub-btn" aria-label="下一页" title="下一页" onClick={onNext}><ChevronRight size={20} strokeWidth={1.5} /></button></div>
       <button className="flow-control" onClick={onFlow} data-flow={flow} title={flow === 'scroll' ? '现在是竖向滚动，点一下改回翻页' : '现在是翻页，点一下改成竖向滚动'}>{pdf ? flow === 'scroll' ? '连续' : '单页' : flow === 'scroll' ? '滚动' : '翻页'}</button>

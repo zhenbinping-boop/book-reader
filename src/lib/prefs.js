@@ -13,6 +13,8 @@ const KEY = 'book-reader:prefs'
 
 /** 四套阅读主题，顺序即切换顺序 */
 export const READER_THEMES = ['paper', 'sepia', 'night', 'oled']
+export const READER_BACKGROUNDS = ['plain', 'mountain', 'bamboo']
+export const READER_BACKGROUND_LABELS = { plain: '素纸', mountain: '远山', bamboo: '竹影' }
 
 export const THEME_LABELS = {
   paper: '暖纸',
@@ -69,6 +71,7 @@ export function stepReaderSize(size, dir) {
 export const DEFAULT_PREFS = {
   /** null 表示「跟随系统」，与 CSS 的 prefers-color-scheme 默认行为一致 */
   readerTheme: null,
+  readerBackground: 'plain',
   /** 字号 px，只能取 READER_SIZES 里的档位 */
   readerSize: 18,
   /** 行高倍率，READER_LEADINGS */
@@ -118,6 +121,7 @@ export function loadPrefs() {
     readerPad: snapTo(READER_PADS, p.readerPad),
     // 版式是枚举不是数值，只能白名单校验 —— 手改过 localStorage 也不该让阅读器失帧
     readerFlow: READER_FLOWS.includes(p.readerFlow) ? p.readerFlow : DEFAULTS.readerFlow,
+    readerBackground: READER_BACKGROUNDS.includes(p.readerBackground) ? p.readerBackground : DEFAULTS.readerBackground,
   }
 }
 

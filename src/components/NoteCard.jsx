@@ -3,7 +3,7 @@ import { CornerUpLeft, PencilLine, Save, Trash2 } from 'lucide-react'
 import { updateHighlight } from '../db'
 import { normalizeNote } from '../lib/library'
 
-export default function NoteCard({ highlight: h, label, bookTitle, onJump, onDelete, onSaved, autoEdit = false }) {
+export default function NoteCard({ highlight: h, label, bookTitle, onJump, onPreview, onDelete, onSaved, autoEdit = false }) {
   const [editing, setEditing] = useState(autoEdit)
   const [text, setText] = useState(h.note || '')
   const [tags, setTags] = useState((h.tags || []).join('，'))
@@ -32,7 +32,7 @@ export default function NoteCard({ highlight: h, label, bookTitle, onJump, onDel
       {h.tags?.length > 0 && <div className="note-tags">{h.tags.map(t => <span key={t}>{t}</span>)}</div>}
     </>}
     <footer><button className="note-source" onClick={() => onJump(h)}><span>{bookTitle && `${bookTitle} · `}<span className="note-pg">{label}</span></span><CornerUpLeft size={14} /></button>
-      <div className="note-actions"><button onClick={edit} aria-label="编辑笔记" title="编辑笔记"><PencilLine size={15} /></button><button className="note-del" onClick={() => onDelete(h.id)} aria-label="删除这条高亮" title="删除这条高亮"><Trash2 size={14} /></button></div>
+      <div className="note-actions">{onPreview && <button className="peek-note-link" onClick={onPreview} aria-label={`回看${label}的笔记`}>回看</button>}<button onClick={edit} aria-label="编辑笔记" title="编辑笔记"><PencilLine size={15} /></button><button className="note-del" onClick={() => onDelete(h.id)} aria-label="删除这条高亮" title="删除这条高亮"><Trash2 size={14} /></button></div>
     </footer>
   </article>
 }

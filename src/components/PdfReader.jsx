@@ -14,7 +14,7 @@ import {
   addBookmark,
   deleteBookmark,
 } from '../db'
-import { loadPrefs, savePrefs, resolveTheme, nextTheme, THEME_LABELS, applyThemeColor } from '../lib/prefs'
+import { loadPrefs, savePrefs, resolveTheme, nextTheme, THEME_LABELS, READER_BACKGROUNDS, READER_BACKGROUND_LABELS, applyThemeColor } from '../lib/prefs'
 import { readSelection } from '../lib/selection'
 import { exportNotes } from '../lib/backup'
 import useHistoryStack from '../hooks/useHistoryStack'
@@ -27,6 +27,7 @@ import useProgressCheckpoint from '../hooks/useProgressCheckpoint'
 import { readPdfPosition, pdfScrollTop } from '../lib/pdfPosition'
 import PdfPage from './PdfPage'
 import SidePanel from './SidePanel'
+import PeekWindow from './PeekWindow'
 import SelectionPopover from './SelectionPopover'
 import DisplayMenu from './DisplayMenu'
 import { ReaderHeader, ReaderActions } from './ReaderChrome'
@@ -50,6 +51,7 @@ export default function PdfReader({ bookId, title, onBack }) {
   const [zoom, setZoom] = useState(1)
   const [ui, setUi] = useState(() => !loadPrefs().readerImmersive)
   const [drawer, setDrawer] = useState(false)
+  const [peek, setPeek] = useState(null)
   const [drawerTab, setDrawerTab] = useState('outline')
   const [editNoteId, setEditNoteId] = useState(null)
   const openPanel = (tab = 'outline') => { setDrawerTab(tab); setDrawer(true) }
@@ -69,6 +71,7 @@ export default function PdfReader({ bookId, title, onBack }) {
   const keepAwake = useWakeLock(prefs.readerKeepAwake)
 
   useBackClose(drawer, () => setDrawer(false), 'drawer')
+  useBackClose(!!peek, () => setPeek(null), 'peek')
   useBackClose(menu, () => setMenu(false), 'menu')
 
   useEffect(() => {
@@ -466,6 +469,10 @@ export default function PdfReader({ bookId, title, onBack }) {
   })
 
   const menuRows = [
+    { key: 'background', type: 'action', label: '阅读背景', value: READER_BACKGROUND_LABELS[prefs.readerBackground], onClick: () => {
+      const next = READER_BACKGROUNDS[(READER_BACKGROUNDS.indexOf(prefs.readerBackground) + 1) % READER_BACKGROUNDS.length]
+      setPrefs(savePrefs({ readerBackground: next }))
+    } },
     {
       key: 'wake',
       type: 'switch',
@@ -505,7 +512,7 @@ export default function PdfReader({ bookId, title, onBack }) {
 
   useEffect(() => {
     const onKey = (e) => {
-      if (drawer) return
+      if (drawer || peek) return
       if (menu) return
       if (e.key === 'Escape') return onBack()
       // Alt+← 回退到跳转前的位置。放在 mode 判断之前 —— 连续模式下方向键
@@ -526,7 +533,7 @@ export default function PdfReader({ bookId, title, onBack }) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [goTo, onBack, drawer, menu, backToPrev])
+  }, [goTo, onBack, drawer, peek, menu, backToPrev])
 
   /* ---------------- 划词高亮 ---------------- */
 
@@ -719,6 +726,9 @@ export default function PdfReader({ bookId, title, onBack }) {
   }, [textPages, bookId, pdf])
 
   const onJumpHit = useCallback((hit) => jumpToPage(hit.page + 1), [jumpToPage])
+  const openPeek = useCallback(target => { setDrawer(false); setPeek(target) }, [])
+  const openDefaultPeek = useCallback(() => openPeek({ index: Math.max(0, currentRef.current - 2), offset: 0 }), [openPeek])
+  const loadPeek = useCallback(async () => ({}), [])
 
   /* ---------------- 笔记导出 ---------------- */
 
@@ -801,7 +811,7 @@ export default function PdfReader({ bookId, title, onBack }) {
   )
 
   return (
-    <div className={`reader${immersive ? ' immersive' : ''}`} data-reader-theme={theme}>
+    <div className={`reader${immersive ? ' immersive' : ''}`} data-reader-theme={theme} data-reader-background={prefs.readerBackground}>
       <div
         className={`reader-view${mode === 'page' ? ' page-mode' : ''}`}
         ref={viewRef}
@@ -867,7 +877,7 @@ export default function PdfReader({ bookId, title, onBack }) {
             {current} / {total}
           </span>
         </div>
-        <ReaderActions pdf onPanel={() => openPanel('outline')} onBookmarks={() => openPanel('bookmarks')}
+        <ReaderActions pdf onPanel={() => openPanel('outline')} onBookmarks={() => openPanel('bookmarks')} onPreview={openDefaultPeek}
           onPrevious={() => goTo(current - 1)} onNext={() => goTo(current + 1)} onAppearance={() => setMenu(true)} onFlow={() => setMode(m => m === 'scroll' ? 'page' : 'scroll')} flow={mode} />
       </div>
 
@@ -887,6 +897,7 @@ export default function PdfReader({ bookId, title, onBack }) {
           initialTab={drawerTab}
           editNoteId={editNoteId}
           bookTitle={title}
+          onPreview={openPeek}
           onNoteSaved={h => setHighlights(rows => rows.map(n => n.id === h.id ? h : n))}
           outline={outline}
           current={current}
@@ -911,6 +922,9 @@ export default function PdfReader({ bookId, title, onBack }) {
           setQuery={setQuery}
         />
       )}
+
+      {peek && <PeekWindow initial={peek} total={total} label={i => `第 ${i + 1} 页`} load={loadPeek} pdf={{ doc: pdf, sizes, cache: pageCache }}
+        onClose={() => setPeek(null)} onRead={target => { setPeek(null); jumpToPage(target.index + 1) }} />}
 
       {menu && <DisplayMenu rows={menuRows} onClose={() => setMenu(false)} />}
 

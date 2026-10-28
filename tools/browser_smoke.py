@@ -84,7 +84,7 @@ def run_page(chrome, target, timeout):
         if hasattr(os, 'geteuid') and os.geteuid() == 0:
             args.append('--no-sandbox')
         args.extend(shlex.split(os.environ.get('CHROME_ARGS', '')))
-        with tempfile.TemporaryFile(mode='w+') as stderr:
+        with tempfile.TemporaryFile(mode='w+', encoding='utf-8', errors='replace') as stderr:
             proc = subprocess.Popen(args + [target], stdout=subprocess.DEVNULL, stderr=stderr,
                                     start_new_session=os.name != 'nt')
             deadline = time.monotonic() + timeout

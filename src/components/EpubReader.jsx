@@ -31,8 +31,10 @@ import useImmersive from '../hooks/useImmersive'
 import usePinch from '../hooks/usePinch'
 import useBackClose from '../hooks/useBackClose'
 import useReaderGesture from '../hooks/useReaderGesture'
+import useScrollChapter from '../hooks/useScrollChapter'
 import useProgressCheckpoint from '../hooks/useProgressCheckpoint'
 import SidePanel from './SidePanel'
+import PeekWindow from './PeekWindow'
 import SelectionPopover from './SelectionPopover'
 import AppearancePanel from './AppearancePanel'
 import DisplayMenu from './DisplayMenu'
@@ -111,6 +113,7 @@ export default function EpubReader({ bookId, title, onBack }) {
   const [box, setBox] = useState({ w: 0, h: 0 })
   const [ui, setUi] = useState(() => !loadPrefs().readerImmersive)
   const [drawer, setDrawer] = useState(false)
+  const [peek, setPeek] = useState(null)
   const [drawerTab, setDrawerTab] = useState('outline')
   const [editNoteId, setEditNoteId] = useState(null)
   const openPanel = (tab = 'outline') => { setDrawerTab(tab); setDrawer(true) }
@@ -138,6 +141,7 @@ export default function EpubReader({ bookId, title, onBack }) {
   const keepAwake = useWakeLock(prefs.readerKeepAwake)
 
   useBackClose(drawer, () => setDrawer(false), 'drawer')
+  useBackClose(!!peek, () => setPeek(null), 'peek')
   useBackClose(appearance, () => setAppearance(false), 'appearance')
   useBackClose(menu, () => setMenu(false), 'menu')
   useBackClose(!!popover, () => dismissPopover(), 'popover')
@@ -392,6 +396,7 @@ export default function EpubReader({ bookId, title, onBack }) {
     const top = vp.getBoundingClientRect().top
     let last = null
     for (const el of cols.children) {
+      if (!el.hasAttribute('data-seg')) continue
       if (el.getBoundingClientRect().bottom > top + 1) return { el, exact: true }
       last = el
     }
@@ -961,6 +966,7 @@ export default function EpubReader({ bookId, title, onBack }) {
         readerLeading: DEFAULT_PREFS.readerLeading,
         readerParaGap: DEFAULT_PREFS.readerParaGap,
         readerPad: DEFAULT_PREFS.readerPad,
+        readerBackground: DEFAULT_PREFS.readerBackground,
       })
     )
   }, [])
@@ -993,9 +999,14 @@ export default function EpubReader({ bookId, title, onBack }) {
 
   const readerGesture = useReaderGesture({
     mode: flow, shouldIgnoreSwipe,
-    blocked: () => phase !== 'ready' || drawer || appearance || menu || !!popoverRef.current,
+    blocked: () => phase !== 'ready' || drawer || !!peek || appearance || menu || !!popoverRef.current,
     next: nextPage, previous: prevPage,
   })
+
+  useScrollChapter(vpRef, { enabled: phase === 'ready' && flow === 'scroll' && bundle?.chapter === chapter,
+    chapter, canNext: chapter < total - 1,
+    blocked: () => drawer || !!peek || appearance || menu || !!popoverRef.current || shouldIgnoreSwipe(),
+    onNext: () => goChapter(chapterRef.current + 1) })
 
   gestureRef.current = readerGesture
 
@@ -1049,7 +1060,7 @@ export default function EpubReader({ bookId, title, onBack }) {
 
   useEffect(() => {
     const onKey = (e) => {
-      if (drawer || appearance || menu) return
+      if (drawer || peek || appearance || menu) return
       if (e.key === 'Escape') {
         if (popoverRef.current) return
         return onBack()
@@ -1070,7 +1081,7 @@ export default function EpubReader({ bookId, title, onBack }) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [nextPage, prevPage, onBack, drawer, appearance, menu, backToPrev])
+  }, [nextPage, prevPage, onBack, drawer, peek, appearance, menu, backToPrev])
 
   /** 书里的内链：同章就直接滚过去，跨章就换章带上锚点 */
   const followFragment = useCallback(
@@ -1401,6 +1412,31 @@ export default function EpubReader({ bookId, title, onBack }) {
 
   const onJumpHit = useCallback((hit) => jumpToAnchor(hit.page, hit.from || 0), [jumpToAnchor])
 
+  const openPeek = useCallback(target => { setDrawer(false); setPeek(target) }, [])
+  const openDefaultPeek = useCallback(() => {
+    const i = chapterRef.current, offset = anchorRef.current || 0
+    openPeek(offset > 300 || i === 0 ? { index: i, offset: Math.max(0, offset - 500) } : { index: i - 1, offset: 0 })
+  }, [openPeek])
+  const loadPeek = useCallback(async target => {
+    const book = epubRef.current, ch = book?.chapters[target.index]
+    if (!ch) throw new Error('找不到这一节')
+    const urls = [], urlCache = new Map()
+    const cleanup = () => urls.forEach(url => URL.revokeObjectURL(url))
+    try {
+      const html = await readChapter(book, target.index)
+      if (!html) return { segs: [], cleanup }
+      const built = await buildChapter({ html, chapterPath: ch.path, getResource: async path => {
+        if (urlCache.has(path)) return urlCache.get(path)
+        const res = await readResource(book, path)
+        const url = res ? URL.createObjectURL(res) : null
+        if (url) urls.push(url)
+        urlCache.set(path, url); return url
+      } })
+      const i = target.fragment ? built.ids.get(target.fragment) : null
+      return { segs: built.segs, offset: i != null ? built.segs[i]?.start ?? 0 : target.offset || 0, cleanup }
+    } catch (error) { cleanup(); throw error }
+  }, [])
+
   /* ---------------- 渲染 ---------------- */
 
   const marksLocal = useMemo(
@@ -1468,6 +1504,7 @@ export default function EpubReader({ bookId, title, onBack }) {
     <div
       className={`reader txt-reader epub-reader${immersive ? ' immersive' : ''}`}
       data-reader-theme={theme}
+      data-reader-background={prefs.readerBackground}
       style={readerStyle}
     >
       {/* 长按选词时压制系统「复制/全选」气泡：只拦鼠标环境 —— 安卓的长按选词由
@@ -1490,6 +1527,7 @@ export default function EpubReader({ bookId, title, onBack }) {
             className={`txt-columns${flow === 'scroll' ? ' scroll-flow' : ''}`}
             ref={setCols}
             data-chapter={chapter}
+            data-next-hint={flow === 'scroll' && chapter < total - 1 ? '继续上滑 · 下一节' : undefined}
             style={
               flow === 'scroll'
                 ? undefined
@@ -1558,7 +1596,7 @@ export default function EpubReader({ bookId, title, onBack }) {
           )}
 
         </div>
-        <ReaderActions onPanel={() => openPanel('outline')} onBookmarks={() => openPanel('bookmarks')}
+        <ReaderActions onPanel={() => openPanel('outline')} onBookmarks={() => openPanel('bookmarks')} onPreview={openDefaultPeek}
           onPrevious={prevPage} onNext={nextPage} onAppearance={() => setAppearance(true)} onFlow={toggleFlow} flow={flow} />
       </div>
 
@@ -1590,6 +1628,7 @@ export default function EpubReader({ bookId, title, onBack }) {
           initialTab={drawerTab}
           editNoteId={editNoteId}
           bookTitle={title}
+          onPreview={openPeek}
           onNoteSaved={h => setHighlights(rows => rows.map(n => n.id === h.id ? h : n))}
           outline={epub?.outline ?? EMPTY}
           current={chapter + 1}
@@ -1613,6 +1652,9 @@ export default function EpubReader({ bookId, title, onBack }) {
           setQuery={setQuery}
         />
       )}
+
+      {peek && <PeekWindow initial={peek} total={total} label={i => epub?.chapters[i]?.title || `第 ${i + 1} 节`} load={loadPeek}
+        onClose={() => setPeek(null)} onRead={target => { setPeek(null); jumpToAnchor(target.index, target.offset) }} />}
 
       {toast && <div className="toast">{toast}</div>}
     </div>

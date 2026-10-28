@@ -46,7 +46,7 @@ export default function Shelf({ books, onImport, onDelete, onOpenBackup, onBooks
   return <div className={`app ink-shell page-${page}`}>
     <div className="ink-page-backdrop" aria-hidden="true" />
     <header className="topbar ink-topbar">
-      <a className="desktop-wordmark" href="#/" aria-label="栖读首页">栖读<Seal /></a>
+      <a className="desktop-wordmark" href="#/" aria-label="芸窗首页">芸窗<Seal /></a>
       <div className="page-heading"><h1>{titles[page] || titles.shelf}</h1><Seal /></div>
       <div className="header-actions">
         {page === 'shelf' && <IconButton label="搜索书架" onClick={() => setSearching(v => !v)}><Search size={23} strokeWidth={1.6} /></IconButton>}
