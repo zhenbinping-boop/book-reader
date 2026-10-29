@@ -41,6 +41,23 @@ export function coverVariant(book) {
   return [...String(book.fileHash || book.title || book.id)].reduce((n, c) => (n * 31 + c.codePointAt(0)) >>> 0, 0) % 4
 }
 
+// 只处理书皮上展示的题签；书目、搜索和备份始终保留原始完整书名。
+export function coverTitle(title) {
+  const original = String(title ?? '').trim() || '未命名'
+  let short = original
+  const bracketed = /\([^()（）\[\]【】]*\)|（[^()（）\[\]【】]*）|\[[^()（）\[\]【】]*\]|【[^()（）\[\]【】]*】/gu
+  let previous
+  do { previous = short; short = short.replace(bracketed, '') } while (short !== previous)
+  short = short.trim() || original
+  const chars = typeof Intl.Segmenter === 'function'
+    ? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(short)].map(part => part.segment)
+    : Array.from(short)
+  const isHan = /\p{Script=Han}/u.test(short)
+  const limit = isHan ? 12 : 20
+  const display = chars.length > limit ? [...chars.slice(0, limit - 1), '…'] : chars
+  return { text: display.join(''), isHan, length: display.length }
+}
+
 export function restoredNotePatch(local, incoming) {
   if ((incoming.updatedAt || incoming.createdAt || 0) <= (local.updatedAt || local.createdAt || 0)) return null
   return { note: incoming.note || '', tags: Array.isArray(incoming.tags) ? incoming.tags : [],

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readingState, progressPercent, filterLibrary, normalizeBookDetails, normalizeNote, coverVariant } from '../src/lib/library.js'
+import { readingState, progressPercent, filterLibrary, normalizeBookDetails, normalizeNote, coverVariant, coverTitle } from '../src/lib/library.js'
 
 test('new imports stay unread even when they have a placeholder page', () => {
  const book={pageCount:10,progress:{page:1,started:false}}
@@ -36,6 +36,17 @@ test('note editing preserves prose and creates unique, bounded searchable tags',
 test('generated book cover selection survives database ID changes after backup restore', () => {
  assert.equal(coverVariant({id:1,fileHash:'sha256:abc',title:'书'}),coverVariant({id:999,fileHash:'sha256:abc',title:'书'}))
  assert.equal(coverVariant({id:1,title:'浮生六记'}),coverVariant({id:999,title:'浮生六记'}))
+})
+test('cover title omits balanced bracketed extras without changing book metadata', () => {
+ assert.equal(coverTitle('明朝那些事儿(增补版)(套装共9册)').text,'明朝那些事儿')
+ assert.equal(coverTitle('浮生六记（修订版【珍藏】）').text,'浮生六记')
+ assert.equal(coverTitle('A Tale [Illustrated] (2026)').text,'A Tale')
+ assert.equal(coverTitle('未闭合(标题').text,'未闭合(标题')
+ assert.equal(coverTitle('（唯一书名）').text,'（唯一书名）')
+ assert.equal(coverTitle('漫长标题一二三四五六七八九十十一十二').text,'漫长标题一二三四五六七…')
+ const original={title:'明朝那些事儿(增补版)',readingStatus:'reading'}
+ coverTitle(original.title)
+ assert.equal(normalizeBookDetails(original).title,original.title)
 })
 test('explicit cover style stays within the four available art designs', () => {
  assert.equal(coverVariant({coverStyle:2,fileHash:'sha256:any'}),2)

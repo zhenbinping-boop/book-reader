@@ -37,7 +37,9 @@ try{
   ok(name+' 选择读这里后才跳转',name==='PDF'?host.querySelector('.scrub-num').textContent.includes(target.split('/')[0].trim()):Number(host.querySelector('.txt-columns').dataset.chapter)===Number(target.split('/')[0].trim())-1)
  }
  for(const [name,Reader,file] of [['TXT',Txt,txt],['EPUB',Epub,()=>sample('sample.epub','application/epub+zip')]]){
-  await clear();savePrefs({readerFlow:'scroll'});const {id}=await importFile(await file());await mount(Reader,id,'.txt-p');const view=host.querySelector('.txt-viewport');let before=Number(host.querySelector('.txt-columns').dataset.chapter)
+  await clear();savePrefs({readerFlow:'scroll',readerBackground:'mountain',readerTheme:'sepia'});const {id}=await importFile(await file());await mount(Reader,id,'.txt-p');const view=host.querySelector('.txt-viewport');let before=Number(host.querySelector('.txt-columns').dataset.chapter)
+  const stage=host.querySelector('.txt-stage'),stageStyle=getComputedStyle(stage)
+  ok(name+' 背景在正文区域显示',stageStyle.backgroundImage.includes('reader-mountain.webp')&&stageStyle.backgroundSize.includes('calc('))
   view.scrollTop=view.scrollHeight;view.dispatchEvent(new Event('scroll',{bubbles:true}));await sleep(150)
   fire(view,'touchstart',[[180,350]]);fire(view,'touchmove',[[180,220]]);fire(view,'touchend',[[180,220]])
   await until(()=>Number(host.querySelector('.txt-columns').dataset.chapter)===before+1)
@@ -56,6 +58,15 @@ try{
  ok('新增书封样式可随完整备份恢复',(await db.books.toArray())[0]?.coverStyle===7)
  await db.books.update((await db.books.toArray())[0].id,{coverStyle:null});await restoreBackup(snapshot)
  ok('已有藏书缺少书封时可从备份补回',(await db.books.toArray())[0]?.coverStyle===7)
+ await clear()
+ const Cover=(await import('/src/components/BookCover.jsx')).default
+ root=createRoot(host)
+ const widths=[84,102,150,200],titles=['明朝那些事儿(增补版)(套装共9册)','极其漫长的一部中文小说名称与其他内容','A Very Long English Book Title (Edition)']
+ root.render(React.createElement(React.Fragment,null,...widths.flatMap(w=>[0,1,2,3,4,5,6,7].flatMap(v=>titles.map((title,i)=>React.createElement('div',{key:`${w}-${v}-${i}`,style:{position:'relative',width:w,height:w*1.5}},React.createElement(Cover,{book:{title,artCover:true,coverStyle:v}})))))))
+ await sleep(300)
+ const covers=[...host.querySelectorAll('.generated-cover')]
+ ok('中英文题签适配不同书封尺寸',covers.length===96&&covers.every(c=>{const box=c.querySelector('.book-title-slip').getBoundingClientRect(),text=c.querySelector('.book-title-slip>span'),r=text.getBoundingClientRect();return r.left>=box.left-1&&r.right<=box.right+1&&r.top>=box.top-1&&r.bottom<=box.bottom+1&&text.scrollHeight<=text.clientHeight+1}))
+ ok('书皮省略括号附加内容',covers.filter(c=>c.textContent.includes('明朝那些事儿')).every(c=>c.querySelector('.book-title-slip').textContent==='明朝那些事儿'))
  await clear();log(failed?`RESULT: FAIL (${failed})`:'RESULT: PASS')
 }catch(e){log('THROWN: '+(e.stack||e))}finally{if(root)root.unmount()}
 log('ALL DONE')
