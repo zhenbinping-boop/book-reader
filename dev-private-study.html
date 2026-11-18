@@ -44,6 +44,9 @@ try {
   const entry = await until(() => q('.study-entry')?.textContent.includes('童生') && q('.study-entry'))
   await ok('新用户的书架展示书斋入口与导入引导', q('.ink-navigation a[href="#/"]').getAttribute('aria-current') === 'page' && q('.welcome-reading .btn').textContent.includes('导入第一本书'))
   await until(() => !q('.shelf-seal-entry').disabled)
+  await ok('书架印章与书斋入口共用一张卡面', q('.study-entries').contains(q('.shelf-seal-entry')) &&
+    getComputedStyle(q('.shelf-seal-entry')).backgroundColor === 'rgba(0, 0, 0, 0)' &&
+    getComputedStyle(q('.shelf-seal-entry')).borderTopWidth === '0px')
   q('.shelf-seal-entry').click()
   await until(() => q('.private-study-seals') && history.state?.__backClose)
   await ok('从书架一步打开功名印谱', location.hash === '#/' && host.querySelectorAll('.study-seal-cell').length === 8)
@@ -54,6 +57,9 @@ try {
   await until(() => q('.private-study'))
   await until(() => q('.study-scene-bg').naturalWidth)
   await ok('书架一步进入真实路由和日间书斋原画', location.hash === '#/study' && q('.study-scene').dataset.light === 'day')
+  const inlay = q('.study-seal-inlay')
+  await ok('展出印嵌在书斋原画且有手机触控区域', q('.study-scene').contains(inlay) &&
+    inlay.getBoundingClientRect().width >= 44 && !q('.study-links button img'))
   button('布置').click()
   await until(() => q('.private-study-decor'))
   await ok('无行迹时三件物品显示差额且不能摆放', [...host.querySelectorAll('.study-objects button')].every(b => b.disabled) && q('.study-objects').textContent.includes('还差 1 小时'))
@@ -96,8 +102,8 @@ try {
   for (let i = 1; i <= 5; i++) days[readingDay(end - i * 86400000)] = 7_200_000
   await db.readingSessions.add({version:1,id:'test-rank',startedAt:end - 6 * 86400000, updatedAt:end,
     effectiveMs:36_000_000,days,bookTitle:'读书对照',bookHash:null})
-  await until(() => q('.study-display-seal small')?.textContent.includes('秀才'))
-  q('.study-display-seal').click()
+  await until(() => q('.study-seal-inlay')?.getAttribute('aria-label').includes('秀才'))
+  q('.study-seal-inlay').click()
   await until(() => q('.study-seal-cell'))
   await ok('功名印谱显示八枚生成图与历史达成日期', host.querySelectorAll('.study-seal-cell').length === 8 && !!q('.study-seal-detail time'))
   const sealCells = [...host.querySelectorAll('.study-seal-cell')]
@@ -118,8 +124,8 @@ try {
   escape()
   await until(() => !q('.private-study-dialog') && !history.state?.__backClose)
   q('.study-entry').click()
-  await until(() => q('.study-display-seal small')?.textContent.includes('童生'))
-  await ok('书斋同步显示书架选择的展出印，原画保持完整', !q('.study-scene button img'))
+  await until(() => q('.study-seal-inlay')?.getAttribute('aria-label').includes('童生'))
+  await ok('书斋木板同步显示书架选择的展出印', q('.study-seal-inlay img').src.endsWith('seal-tongsheng.webp'))
   button('专注行迹').click()
   await until(() => q('.study-month-label select'))
   await ok('月度回顾从两份历史取值，展示独立累计和专注事项', !!q('.study-history-list') && q('.study-history-list').textContent.includes('复习笔记') && q('.private-study-history .study-totals').textContent.includes('有效阅读'))

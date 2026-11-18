@@ -27,18 +27,21 @@ export function StudyEntry({ onEnter }) {
   useBackClose(open, close, 'shelf-seals')
   const subtitle = loading || !focus.ready ? '正在读取行迹…' :
     error || focus.error ? '查看书斋与行迹' : `${profile.rank.name} · 累计专注 ${formatReadingTime(focus.elapsedMs)}`
-  return <section className="study-entries" aria-label="书斋与功名">
-    <a className="study-entry" href="#/study" onClick={onEnter}>
-      <img className="study-entry-art" src={art('study-thumb')} alt="" width="100" height="100" />
-      <span className="study-entry-text"><strong>我的书斋</strong><span>{subtitle}</span></span>
-      <ChevronRight size={16} aria-hidden="true" />
-    </a>
-    <button type="button" className="shelf-seal-entry" onClick={() => setOpen(true)} disabled={loading || !!error}>
-      <img src={sealArt(profile.rank.id)} alt="" width="34" height="38" />
-      <span className="study-entry-text"><strong>功名印谱</strong><span>{profile.rank.name}</span></span>
-    </button>
+  return <>
+    <section className="study-entries" aria-label="书斋与功名">
+      <a className="study-entry" href="#/study" onClick={onEnter}>
+        <img className="study-entry-art" src={art('study-thumb')} alt="" width="100" height="100" />
+        <span className="study-entry-text"><strong>我的书斋</strong><span>{subtitle}</span></span>
+        <ChevronRight size={16} aria-hidden="true" />
+      </a>
+      <button type="button" className="shelf-seal-entry" onClick={() => setOpen(true)} disabled={loading || !!error}
+        aria-label={`功名印谱，当前功名${profile.rank.name}`}>
+        <img src={sealArt(profile.rank.id)} alt="" width="32" height="37" />
+        <span>功名印谱</span>
+      </button>
+    </section>
     {open && <SealCollectionDialog profile={profile} decor={decor} onChange={setDecor} onClose={close} />}
-  </section>
+  </>
 }
 
 function equippedSeal(profile, decor) {
@@ -174,6 +177,10 @@ export default function PrivateStudy() {
         <img src={art('study-scroll')} alt="" />
         <span>{scene.caption.trim() || '静以修身'}</span>
       </div>}
+      <button type="button" className="study-seal-inlay" onClick={() => show('seals')} disabled={loading || !!error}
+        title="打开功名印谱" aria-label={`功名印谱，当前展出${equipped.name}`}>
+        <span aria-hidden="true"><img src={sealArt(equipped.id)} alt="" width="38" height="46" /></span>
+      </button>
       <button type="button" className="btn study-decor-button" onClick={() => show('decor')} disabled={!focus.ready || !!focus.error}>
         <Paintbrush size={16} aria-hidden="true" />布置
       </button>
@@ -183,11 +190,6 @@ export default function PrivateStudy() {
       <div><dt>累计专注</dt><dd>{!focus.ready ? '…' : focus.error ? '暂不可用' : formatReadingTime(focus.elapsedMs)}</dd></div>
     </dl>
     <div className="study-links">
-      <button type="button" className="study-display-seal" onClick={() => show('seals')} disabled={loading || !!error}>
-        <img src={sealArt(equipped.id)} alt="" width="34" height="38" />
-        <span>功名印谱 <small>展出 · {equipped.name}</small></span>
-        <ChevronRight size={18} aria-hidden="true" />
-      </button>
       <button type="button" onClick={() => show('history')} disabled={!ready || !!error || !!focus.error}>专注行迹 <ChevronRight size={18} aria-hidden="true" /></button>
     </div>
     {(error || focus.error) && <p className="study-dialog-copy" role="status">{error || '专注行迹暂时无法读取'}</p>}
