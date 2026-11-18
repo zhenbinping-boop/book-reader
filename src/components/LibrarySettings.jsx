@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { ArrowDownToLine, ChevronRight, FileText, Hand, Moon, Sun, Upload } from 'lucide-react'
 import { DEFAULT_PREFS, loadPrefs, savePrefs, resolveTheme, READER_THEMES, THEME_LABELS, READER_BACKGROUNDS, READER_BACKGROUND_LABELS, READER_SIZES, READER_LEADINGS, READER_PARA_GAPS, READER_PADS } from '../lib/prefs'
 import { SectionTitle } from './InkUI'
+import ReadingGrowth from './ReadingGrowth'
 
 export function ThemePicker({ theme, onChange }) {
   return <div className="theme-picker ink-theme-picker">{READER_THEMES.map(t => <button key={t} className={`theme-opt ${theme === t ? 'on' : ''}`} aria-pressed={theme === t} onClick={() => onChange(t)}><span className="theme-dot" data-theme={t} aria-hidden="true">{theme === t && <span>✓</span>}</span>{THEME_LABELS[t]}</button>)}</div>
@@ -17,6 +18,7 @@ export default function LibrarySettings({ onPickFile, onOpenBackup }) {
   const change = patch => { setPrefs(savePrefs(patch)); setTip('已保存，将用于下次阅读') }
   const cycle = (key, ladder) => { const i = ladder.indexOf(prefs[key]); change({ [key]: ladder[(i + 1) % ladder.length] }) }
   return <div className="library-settings">
+    <ReadingGrowth />
     <section className="settings-section"><SectionTitle>导入图书</SectionTitle><div className="format-tiles">{[['pdf', 'PDF', '固定版式'], ['txt', 'TXT', '纯文本'], ['epub', 'EPUB', '电子书']].map(([id, title, sub]) => <button className={`format-tile tile-${id}`} key={id} onClick={() => onPickFile(id)}><span className="file-icon"><FileText size={24} strokeWidth={1.3} /><b>{title}</b></span><strong>{title}</strong><span>{sub}</span></button>)}</div></section>
     <section className="settings-section"><SectionTitle>阅读外观</SectionTitle><ThemePicker theme={resolveTheme(prefs)} onChange={t => change({ readerTheme: t })} />
       <p className="setting-help">阅读背景</p><BackgroundPicker value={prefs.readerBackground} onChange={b => change({ readerBackground: b })} />

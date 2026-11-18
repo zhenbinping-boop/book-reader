@@ -1,6 +1,8 @@
 import { isNative, nativeExport } from './native'
 import { restoredNotePatch } from './library'
 import { db } from '../db'
+import { cleanFocusRecord, isFocusRecord } from './focusTimer'
+import { cleanReadingRecord, isReadingRecord, mergeReadingRecord } from './readingExperience'
 
 /**
  * 备份 / 恢复。
@@ -178,12 +180,14 @@ export async function buildBackup({ includeFiles = false } = {}) {
   // 一致性快照：读取期间不能混入另一标签页的导入、删除或进度更新。
   // Blob 转码在事务外做，避免 FileReader/arrayBuffer 令 IndexedDB 事务提前结束。
   const snapshot = await db.transaction('r',
-    [db.books, db.blobs, db.progress, db.highlights, db.bookmarks], async () => ({
+    [db.books, db.blobs, db.progress, db.highlights, db.bookmarks, db.focusSessions, db.readingSessions], async () => ({
       books: await db.books.toArray(),
       blobs: includeFiles ? await db.blobs.toArray() : [],
       progress: await db.progress.toArray(),
       highlights: await db.highlights.toArray(),
       bookmarks: await db.bookmarks.toArray(),
+      focusSessions: await db.focusSessions.toArray(),
+      readingSessions: await db.readingSessions.toArray(),
     }))
   const { books } = snapshot
   const blobs = new Map(snapshot.blobs.map((row) => [row.id, row.blob]))
@@ -224,6 +228,8 @@ export async function buildBackup({ includeFiles = false } = {}) {
     progress: snapshot.progress,
     highlights: snapshot.highlights,
     bookmarks: snapshot.bookmarks,
+    focusSessions: snapshot.focusSessions,
+    readingSessions: snapshot.readingSessions,
     files,
   }
 }
@@ -246,6 +252,8 @@ export async function exportBackup({ includeFiles = false } = {}) {
     highlights: data.highlights.length,
     progress: data.progress.length,
     files: data.files.length,
+    focusSessions: data.focusSessions.length,
+    readingSessions: data.readingSessions.length,
   }
 }
 
@@ -341,6 +349,8 @@ function validateBackup(data) {
   }
   if ((data.highlights || []).some(h => (h.note != null && typeof h.note !== 'string') || (h.tags != null && (!Array.isArray(h.tags) || h.tags.some(t => typeof t !== 'string'))))) throw new Error('备份的笔记或标签无效')
   if ((data.files || []).some((f) => typeof f.data !== 'string')) throw new Error('备份的原文件数据无效')
+  if (data.focusSessions !== undefined && (!Array.isArray(data.focusSessions) || data.focusSessions.some(row => !isFocusRecord(row)))) throw new Error('备份的打坐记录无效')
+  if (data.readingSessions !== undefined && (!Array.isArray(data.readingSessions) || data.readingSessions.some(row => !isReadingRecord(row)))) throw new Error('备份的阅读经验记录无效')
   return data
 }
 
@@ -364,7 +374,7 @@ export async function restoreBackup(data) {
   // 先解码文件，坏 base64 在任何数据库写入前报错。
   const files = (data.files || []).map((f) => ({ ...f, blob: base64ToBlob(f.data, f.type) }))
   return db.transaction('rw',
-    [db.books, db.blobs, db.progress, db.highlights, db.bookmarks], async () => {
+    [db.books, db.blobs, db.progress, db.highlights, db.bookmarks, db.focusSessions, db.readingSessions], async () => {
       const report = {
         addedBooks: 0,
         mergedBooks: 0,
@@ -375,6 +385,8 @@ export async function restoreBackup(data) {
         bookmarks: 0,
         files: 0,
         orphanTitles: [],
+        focusSessions: 0,
+        readingSessions: 0,
       }
 
       const localBooks = await db.books.toArray()
@@ -491,6 +503,22 @@ export async function restoreBackup(data) {
         report.files++
       }
 
+      // Portable immutable history; do not restore another device's active timer.
+      for (const raw of data.focusSessions || []) {
+        const row = cleanFocusRecord(raw)
+        if (await db.focusSessions.get(row.id)) continue
+        await db.focusSessions.add(row)
+        report.focusSessions++
+      }
+      // Session checkpoints retain their IDs across devices. Importing an older
+      // or duplicate backup cannot lower XP or add the same time a second time.
+      for (const raw of data.readingSessions || []) {
+        const incoming = cleanReadingRecord(raw), previous = await db.readingSessions.get(incoming.id)
+        const merged = mergeReadingRecord(previous, incoming)
+        if (merged === previous) continue
+        await db.readingSessions.put(merged)
+        report.readingSessions++
+      }
       return report
   })
 }

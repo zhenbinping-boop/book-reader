@@ -1,11 +1,12 @@
 import { ArrowLeft, Bookmark, BookOpenText, ChevronLeft, ChevronRight, List, MoreVertical, Undo2 } from 'lucide-react'
 import BookmarkButton from './BookmarkButton'
+import { ReadingIndicator } from './ReadingGrowth'
 
 export function ReaderHeader({ visible, title, subtitle, status, onBack, histDepth, onHistoryBack, bookmarked, onBookmark, onMenu, children }) {
   return <header className={`reader-top ink-reader-header${visible ? '' : ' hidden'}`}>
     <button className="btn btn-sm header-back" onClick={onBack} aria-label="返回"><ArrowLeft size={22} strokeWidth={1.5} /><span className="sr-only">返回</span></button>
     {histDepth > 0 && <button className="btn btn-sm history-back" onClick={onHistoryBack} title="回到跳转前的位置（Alt+←）" aria-label="回到跳转前的位置"><Undo2 size={18} /><span className="sr-only">↩</span></button>}
-    <div className="reader-title txt-head"><span className="book-heading">{title}</span>{subtitle && <><span className="txt-head-title">{subtitle}</span><span className="txt-head-sub">{status || subtitle}</span></>}</div>
+    <div className="reader-title txt-head"><span className="book-heading">{title}</span>{subtitle && <><span className="txt-head-title">{subtitle}</span><span className="txt-head-sub">{status || subtitle}</span></>}<ReadingIndicator /></div>
     {children}
     <BookmarkButton on={bookmarked} onToggle={onBookmark} />
     <button className="btn btn-sm" onClick={onMenu} aria-label="显示设置" title="显示设置：常亮 / 沉浸"><MoreVertical size={23} strokeWidth={1.5} /></button>

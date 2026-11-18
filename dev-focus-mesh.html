@@ -1,0 +1,57 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Focus mesh controls</title></head><body><pre id="log"></pre><script type="module">
+import { createFocusMeshRenderer } from '/src/lib/focusMesh.js'
+let failed=0
+const log=t=>{document.querySelector('#log').textContent+=t+'\n';fetch('http://127.0.0.1:5178/log',{method:'POST',body:t}).catch(()=>{})}
+const ok=(name,value)=>{if(!value)failed++;log((value?'ok  ':'BAD ')+name)}
+try {
+ const atlas=document.createElement('canvas');atlas.width=128;atlas.height=64
+ const art=atlas.getContext('2d');art.fillStyle='red';art.fillRect(12,28,8,8);art.fillRect(64+28,28,8,8)
+ const canvas=document.createElement('canvas'),fallback=document.createElement('canvas')
+ document.body.append(canvas,fallback)
+ const vectors=new Float32Array(2*3*3*2)
+ for(let i=0;i<9;i++){vectors[i*2]=16;vectors[(9+i)*2]=-16}
+ const renderer=createFocusMeshRenderer(canvas,fallback,atlas,{size:64,side:3,frames:2,vectors},{columns:2,rows:1})
+ ok('GPU mesh renderer is available for the planted control',renderer.mode==='webgl-flow')
+ const gl=canvas.getContext('webgl')
+ const alpha=(x,y)=>{const pixel=new Uint8Array(4);gl.readPixels(x,64-y-1,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);return pixel[3]}
+ renderer.paint(0)
+ ok('planted first key is at x=16',alpha(16,32)>240&&alpha(32,32)<10)
+ renderer.paint(.5)
+ ok('halfway shape is at x=24 with full opacity',alpha(24,32)>240)
+ ok('halfway shape has no old/new silhouette double image',alpha(16,32)<10&&alpha(32,32)<10)
+ renderer.paint(1)
+ ok('planted final key is at x=32',alpha(32,32)>240&&alpha(16,32)<10)
+ canvas.dispatchEvent(new Event('webglcontextlost',{cancelable:true}))
+ renderer.paint(1)
+ const pixel=fallback.getContext('2d').getImageData(32,32,1,1).data
+ ok('context loss falls back to the correct drawing without losing playback',renderer.mode==='canvas-keyframes'&&pixel[3]>240&&!fallback.hidden)
+ renderer.dispose()
+ const zeroAtlas=document.createElement('canvas');zeroAtlas.width=128;zeroAtlas.height=64
+ const zeroArt=zeroAtlas.getContext('2d');zeroArt.fillStyle='red';zeroArt.fillRect(12,28,8,8);zeroArt.fillRect(64+12,28,8,8)
+ const c2=document.createElement('canvas'),f2=document.createElement('canvas')
+ const nullRenderer=createFocusMeshRenderer(c2,f2,zeroAtlas,{size:64,side:3,frames:2,vectors:new Float32Array(36)},{columns:2,rows:1})
+ nullRenderer.paint(.5)
+ const gl2=c2.getContext('webgl'),out=new Uint8Array(4);gl2.readPixels(16,31,1,1,gl2.RGBA,gl2.UNSIGNED_BYTE,out)
+ ok('zero-motion twin preserves the static image',out[3]>240)
+ nullRenderer.dispose()
+ // Independent vertical plant catches UV origin/sign mistakes hidden by a
+ // horizontally translated object centered on the middle scanline.
+ const vertical=document.createElement('canvas');vertical.width=128;vertical.height=64
+ const verticalArt=vertical.getContext('2d');verticalArt.fillStyle='red';verticalArt.fillRect(12,12,8,8);verticalArt.fillRect(64+12,28,8,8)
+ const verticalVectors=new Float32Array(36)
+ for(let i=0;i<9;i++){verticalVectors[i*2+1]=16;verticalVectors[(9+i)*2+1]=-16}
+ const vc=document.createElement('canvas'),vf=document.createElement('canvas')
+ const vr=createFocusMeshRenderer(vc,vf,vertical,{size:64,side:3,frames:2,vectors:verticalVectors},{columns:2,rows:1})
+ vr.paint(.5)
+ const vg=vc.getContext('webgl'),vp=new Uint8Array(4);vg.readPixels(16,64-24-1,1,1,vg.RGBA,vg.UNSIGNED_BYTE,vp)
+ ok('vertical movement uses the same top-down coordinates as the source art',vp[3]>240)
+ vr.dispose()
+ const corrupt=vectors.map(value=>-value),cc=document.createElement('canvas'),cf=document.createElement('canvas')
+ const cr=createFocusMeshRenderer(cc,cf,atlas,{size:64,side:3,frames:2,vectors:corrupt},{columns:2,rows:1})
+ cr.paint(.5)
+ const cg=cc.getContext('webgl'),cp=new Uint8Array(4);cg.readPixels(24,31,1,1,cg.RGBA,cg.UNSIGNED_BYTE,cp)
+ ok('deliberately reversed motion fails the planted midpoint check',cp[3]<10)
+ cr.dispose()
+ log(failed?'FAIL: '+failed+' assertions':'ALL DONE')
+} catch(error) { log('FAIL: '+(error.stack||error)) }
+</script></body></html>

@@ -26,7 +26,7 @@ export default defineConfig(async ({ mode }) => {
       manifest: {
         name: '芸窗',
         short_name: '芸窗',
-        description: '本地导入 PDF、TXT、EPUB，离线阅读与标注',
+        description: '本地阅读与标注，国风打坐专注计时',
         lang: 'zh-CN',
         // 全部用相对路径：manifest 在 /book-reader/manifest.webmanifest 时，
         // '.' 会解析成 /book-reader/，这样部署在子路径或根路径都成立。
@@ -49,7 +49,7 @@ export default defineConfig(async ({ mode }) => {
       },
       workbox: {
         // worker 是 .mjs；CMap / 字体也必须随安装缓存，才能离线首次打开 PDF。
-        globPatterns: ['**/*.{js,mjs,css,html,png,webp,svg,woff2,bcmap,pfb,ttf}'],
+        globPatterns: ['**/*.{js,mjs,css,html,png,webp,svg,woff2,bcmap,pfb,ttf,bin}'],
         navigateFallback: 'index.html',
         cleanupOutdatedCaches: true,
         // pdf.js 的 CMap / worker 会超过 workbox 默认 2MB 上限
@@ -83,8 +83,9 @@ export default defineConfig(async ({ mode }) => {
     server: {
       host: true,
       port: 5173,
-      // .tmp 里放的是无头浏览器的临时 profile，别让它触发 HMR
-      watch: { ignored: ['**/.tmp/**', '**/dist/**', '**/samples/**'] },
+      // Raw authoring art / QA output is not imported by the app. Ignore it
+      // along with temporary profiles to avoid HMR and Windows copy locks.
+      watch: { ignored: ['**/.tmp/**', '**/dist/**', '**/samples/**', '**/assets/**', '**/docs/**'] },
     },
     build: {
       outDir: nativeBuild ? 'dist-android' : 'dist',

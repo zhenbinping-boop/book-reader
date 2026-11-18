@@ -33,6 +33,7 @@ import useBackClose from '../hooks/useBackClose'
 import useReaderGesture from '../hooks/useReaderGesture'
 import useScrollChapter from '../hooks/useScrollChapter'
 import useProgressCheckpoint from '../hooks/useProgressCheckpoint'
+import useReadingTracker from '../hooks/useReadingTracker'
 import SidePanel from './SidePanel'
 import PeekWindow from './PeekWindow'
 import SelectionPopover from './SelectionPopover'
@@ -139,6 +140,7 @@ export default function EpubReader({ bookId, title, onBack }) {
     toggle: toggleImmersive,
   } = useImmersive()
   const keepAwake = useWakeLock(prefs.readerKeepAwake)
+  useReadingTracker(bookId, phase === 'ready' && bundle?.chapter === chapter && !drawer && !peek && !appearance && !menu && !popover)
 
   useBackClose(drawer, () => setDrawer(false), 'drawer')
   useBackClose(!!peek, () => setPeek(null), 'peek')

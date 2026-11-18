@@ -24,6 +24,8 @@ jobs:
       - run: npm ci
       - name: Unit tests
         run: npm run test:unit
+      - name: Browser receipt runner controls
+        run: python tools/test_browser_smoke.py
       - name: Browser acceptance (isolated profile)
         run: npm run test:acceptance
       - name: Production build for GitHub Pages

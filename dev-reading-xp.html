@@ -1,0 +1,83 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>阅读经验与功名验收</title><style>body{margin:0}#host{width:100vw;height:100dvh;position:relative}#log{position:fixed;left:100vw;top:0}</style></head><body><div id="host"></div><pre id="log"></pre><script type="module">
+import '/src/styles.css'
+let failed=0,root
+const log=t=>{document.querySelector('#log').textContent+=t+'\n';fetch('http://127.0.0.1:5178/log',{method:'POST',body:t}).catch(()=>{})}
+const ok=(name,value)=>{if(!value)failed++;log((value?'ok  ':'BAD ')+name)}
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))
+const until=async(fn,timeout=15000)=>{const end=performance.now()+timeout;while(performance.now()<end){const value=await fn();if(value)return value;await sleep(40)}throw Error('等待超时 '+fn.toString().slice(0,160))}
+const host=document.querySelector('#host'),q=s=>host.querySelector(s)
+window.addEventListener('error',e=>{failed++;log('WINDOW ERROR: '+e.message)})
+window.addEventListener('unhandledrejection',e=>{failed++;log('REJECTION: '+(e.reason?.stack||e.reason))})
+try{
+ const React=(await import('react')).default,{createRoot}=await import('react-dom/client'),Dexie=(await import('dexie')).default
+ const {db}=await import('/src/db.js'),App=(await import('/src/App.jsx')).default
+ const {importFile}=await import('/src/lib/importer.js'),{checkpointReading}=await import('/src/lib/readingStore.js')
+ const {readingProfile,readingDay}=await import('/src/lib/readingExperience.js'),{buildBackup,restoreBackup,parseBackup}=await import('/src/lib/backup.js')
+ await db.delete()
+ const old=new Dexie('book-reader');old.version(5).stores({books:'++id, format, addedAt, lastReadAt, fileHash',blobs:'id',progress:'bookId',bookmarks:'++id, bookId, page',highlights:'++id, bookId, page, createdAt',textIndex:'bookId',downloads:'id, status, createdAt',focusSessions:'id, startedAt, endedAt',focusState:'key'})
+ await old.open();await old.books.put({id:77,title:'旧书',fileHash:'legacy'});await old.progress.put({bookId:77,page:3,charOffset:29});await old.focusState.put({key:'current',marker:'preserved'});old.close();await db.open()
+ ok('v5升级到v6保留原书籍、进度和打坐状态，仅新增阅读记录与计时锁',db.verno===6&&(await db.books.get(77)).fileHash==='legacy'&&(await db.progress.get(77)).charOffset===29&&(await db.focusState.get('current')).marker==='preserved'&&await db.readingSessions.count()===0)
+ await db.transaction('rw',db.tables,async()=>{for(const table of db.tables)await table.clear()})
+ localStorage.clear();history.replaceState(null,'','#/')
+ const txt=await importFile(new File(['第一章 读书\n'+('朝读一卷，暮知一事。'.repeat(1000))],'经验测试.txt',{type:'text/plain'}))
+ const pdf=await importFile(new File([await(await fetch('/samples/sample.pdf')).arrayBuffer()],'经验PDF.pdf',{type:'application/pdf'}))
+ const epub=await importFile(new File([await(await fetch('/samples/sample.epub')).arrayBuffer()],'经验EPUB.epub',{type:'application/epub+zip'}))
+ root=createRoot(host);root.render(React.createElement(App));await until(()=>q('.study-entry')?.textContent.includes('童生')&&q('.card .cover'))
+ ok('书架显示童生，选书仍走直接阅读路径',q('.study-entry').textContent.includes('童生')&&!q('.study-scene'))
+ q('.card .cover').click();ok('点书仍立即进入原阅读路由',location.hash.startsWith('#/read/'))
+ await until(()=>q('.reading-xp-status')?.dataset.state==='reading')
+ const bookId=Number(location.hash.split('/').at(-1))
+ await until(async()=> (await db.readingSessions.toArray()).some(row=>row.effectiveMs>=3000))
+ const first=(await db.readingSessions.toArray())[0]
+ ok('真实前台阅读通过单调时钟产生时长，未满5分钟不发经验',first.effectiveMs>=3000&&first.effectiveMs<30000&&readingProfile(await db.readingSessions.toArray()).xp===0)
+ window.dispatchEvent(new Event('blur'));await until(()=>q('.reading-xp-status')?.dataset.state==='paused');await sleep(300)
+ const before=(await db.readingSessions.get(first.id)).effectiveMs;await sleep(2200)
+ ok('失去窗口焦点后不增长阅读时长',(await db.readingSessions.get(first.id)).effectiveMs===before)
+ window.dispatchEvent(new Event('focus'));await until(()=>q('.reading-xp-status')?.dataset.state==='reading')
+ await until(async()=> (await db.readingSessions.get(first.id)).effectiveMs>before+2000)
+ q('[aria-label="阅读面板"]').click();await until(()=>q('.reading-xp-status')?.dataset.state==='paused');await sleep(250)
+ const panelTime=(await db.readingSessions.get(first.id)).effectiveMs;await sleep(1500)
+ ok('打开阅读面板时暂停经验计时',(await db.readingSessions.get(first.id)).effectiveMs===panelTime)
+ location.hash='#/';await until(()=>q('.study-entry'));await sleep(500)
+ for(const [book,selector] of [[txt,'.txt-reader'],[pdf,'.reader-view'],[epub,'.epub-reader']]){
+   location.hash='#/read/'+book.id;await until(()=>q(selector)&&q('.reading-xp-status')?.dataset.state==='reading')
+   const count=await db.readingSessions.count();await until(async()=>await db.readingSessions.count()>count)
+   ok(book.format+'正文就绪后接入相同有效阅读计时',q('.reading-xp-status').dataset.state==='reading')
+   location.hash='#/';await until(()=>q('.study-entry'));await sleep(200)
+ }
+ ok('短阅读退出后不拼接成奖励，书架不继续计时',readingProfile(await db.readingSessions.toArray()).xp===0)
+ await db.readingState.clear()
+ const now=Date.now(),base={version:1,id:'lease-A',startedAt:now-600000,updatedAt:now,effectiveMs:0,days:{},bookTitle:'计时锁',bookHash:null}
+ const competing=await Promise.all([checkpointReading('owner-A',base,{now}),checkpointReading('owner-B',{...base,id:'lease-B'},{now})])
+ ok('两个窗口同时申请时只有一个取得计时锁',competing.filter(result=>result.owned).length===1)
+ const winner=competing[0].owned?'owner-A':'owner-B',loser=winner==='owner-A'?'owner-B':'owner-A',id=winner==='owner-A'?'lease-A':'lease-B'
+ const measured={...base,id,effectiveMs:300000,days:{[readingDay(now)]:300000}}
+ await checkpointReading(winner,measured,{now:now+1})
+ const denied=await checkpointReading(loser,{...measured,id:'denied'},{now:now+2})
+ ok('另一个窗口无法写入重复时长',!denied.owned&&!await db.readingSessions.get('denied'))
+ const expired=await checkpointReading(winner,{...measured,effectiveMs:600000,days:{[readingDay(now)]:600000},updatedAt:now+10000},{now:now+10000})
+ ok('过期锁重新获取时丢弃未确认间隔，不补算',expired.owned&&!expired.accepted&&expired.record.effectiveMs===300000&&(await db.readingSessions.get(id)).effectiveMs===300000)
+ await checkpointReading(winner,expired.record,{now:now+10001,release:true});await db.readingSessions.clear();await db.readingState.clear()
+ const days={},start=new Date();start.setHours(9,0,0,0);start.setDate(start.getDate()-5)
+ for(let day=0;day<5;day++){const date=new Date(start);date.setDate(date.getDate()+day);days[readingDay(date.getTime())]=7200000}
+ const known={version:1,id:'known-ten-hours',startedAt:start.getTime(),updatedAt:Date.now(),effectiveMs:36000000,days,bookTitle:'十小时对照',bookHash:'sha256:known'}
+ await db.readingSessions.put(known);await until(()=>q('.study-entry')?.textContent.includes('秀才'))
+ location.hash='#/settings';await until(()=>q('.reading-growth-heading')?.textContent.includes('秀才'))
+ ok('已知跨日10小时准确获得600经验并晋为秀才',readingProfile(await db.readingSessions.toArray()).xp===600&&q('.reading-growth-copy').textContent.includes('40 小时'))
+ q('.reading-growth-summary').click();await until(()=>q('.reading-growth-dialog'))
+ ok('八段位门槛、当前身份和严格计时规则可查看',q('.reading-rank-list').children.length===8&&q('.reading-rank-list [aria-current=step]').textContent.includes('秀才')&&q('.reading-growth-rules').textContent.includes('3 小时'))
+ window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));await until(()=>!q('.reading-growth-dialog'));await sleep(100)
+ const backup=await buildBackup();ok('备份含阅读时长记录，不含设备计时锁',backup.readingSessions.length===1&&!('readingState'in backup)&&!('xp'in backup))
+ await restoreBackup(backup);await restoreBackup(backup)
+ ok('重复恢复备份不重复发放经验',readingProfile(await db.readingSessions.toArray()).xp===600)
+ const newer=structuredClone(backup);newer.readingSessions[0].days[readingDay(start.getTime())]+=900000;newer.readingSessions[0].effectiveMs+=900000
+ await restoreBackup(newer);await restoreBackup(backup)
+ ok('新检查点按累计值合并，旧备份不倒退也不叠加',readingProfile(await db.readingSessions.toArray()).xp===615)
+ let rejected=false;try{const bad=structuredClone(backup);bad.readingSessions[0].effectiveMs=-1;parseBackup(JSON.stringify(bad))}catch{rejected=true}
+ ok('损坏的经验备份在写库前被拒绝',rejected&&readingProfile(await db.readingSessions.toArray()).xp===615)
+ const legacy={...backup};delete legacy.readingSessions;ok('旧备份缺少经验字段仍兼容',!!parseBackup(JSON.stringify(legacy)));await restoreBackup(legacy)
+ location.hash='#/focus';await until(()=>q('.focus-page'));await sleep(1200)
+ ok('打坐页面继续可用且自身不发阅读经验',readingProfile(await db.readingSessions.toArray()).xp===615&&!!q('.focus-start'))
+}catch(error){failed++;log('FAIL: '+(error.stack||error))}
+finally{root?.unmount();log(failed?'FAIL: '+failed+' assertions failed':'ALL DONE')}
+</script></body></html>

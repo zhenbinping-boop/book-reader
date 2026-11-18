@@ -42,6 +42,15 @@ db.version(3).stores({
 // Existing book/annotation stores are inherited unchanged from v3.
 db.version(4).stores({ downloads: 'id, status, createdAt' })
 
+// v5 adds offline focus history and an atomic, restartable active timer.
+db.version(5).stores({
+  focusSessions: 'id, startedAt, endedAt',
+  focusState: 'key',
+})
+
+// v6 adds portable cumulative reading receipts and a device-local counting lease.
+db.version(6).stores({ readingSessions: 'id, startedAt, updatedAt', readingState: 'key' })
+
 /** 高亮可选颜色。顺序即 UI 中色块的排列顺序 */
 export const HIGHLIGHT_COLORS = ['yellow', 'green', 'blue', 'pink']
 

@@ -1,0 +1,58 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>打坐沉浸动作验收</title><style>body{margin:0}#host{height:100dvh;width:100vw;position:relative}#log{position:fixed;left:100vw;top:0}</style></head><body><div id="host"></div><pre id="log"></pre><script type="module">
+import '/src/styles.css'
+const actualMedia=window.matchMedia.bind(window)
+window.matchMedia=query=>{const media=actualMedia(query);if(query.includes('prefers-reduced-motion'))Object.defineProperty(media,'matches',{value:false});return media}
+let failed=0,root,commits=0
+const log=t=>{document.querySelector('#log').textContent+=t+'\n';fetch('http://127.0.0.1:5178/log',{method:'POST',body:t}).catch(()=>{})}
+const ok=(s,c)=>{if(!c)failed++;log((c?'ok  ':'BAD ')+s)}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms))
+const until=async(fn)=>{const end=performance.now()+12000;while(performance.now()<end){if(await fn())return;await sleep(30)}throw Error('等待超时 '+fn.toString())}
+const host=document.querySelector('#host'),q=s=>host.querySelector(s)
+const button=t=>[...host.querySelectorAll('button')].find(x=>x.textContent.trim()===t)
+window.addEventListener('error',e=>{failed++;log('WINDOW ERROR: '+e.message)})
+window.addEventListener('unhandledrejection',e=>{failed++;log('REJECTION: '+e.reason)})
+try{
+ const React=(await import('react')).default,{createRoot}=await import('react-dom/client')
+ const App=(await import('/src/App.jsx')).default,{db}=await import('/src/db.js')
+ await db.delete();await db.open();history.replaceState(null,'','#/focus')
+ root=createRoot(host);root.render(React.createElement(React.Profiler,{id:'focus',onRender:()=>commits++},React.createElement(App)))
+ await until(()=>q('.focus-start')&&!q('.focus-start').disabled)
+ const cover=q('.focus-landscape').getBoundingClientRect()
+ ok('山水覆盖整个视口，没有图片卡片或大计时器',cover.width>=innerWidth&&cover.height>=innerHeight&&parseFloat(getComputedStyle(q('.focus-clock')).fontSize)<=16)
+ ok('初始姿态为背身站立，已加载 8×4 的 32 帧动作',q('.focus-actor').dataset.poseFrame==='0'&&q('.focus-page').dataset.phase==='idle'&&q('.focus-actor').dataset.poseCount==='32'&&q('.focus-atlas-source').naturalWidth===3072&&q('.focus-atlas-source').naturalHeight===1536)
+ ok('实际页面使用运动形变画布而非双图叠化',q('.focus-actor').dataset.renderer==='webgl-flow'&&q('.focus-actor canvas:not([hidden])')&&!q('.focus-pose'))
+ const entryCommits=commits
+ q('.focus-start').click();await until(()=>q('.focus-page').dataset.phase==='entering')
+ await sleep(1200)
+ const first=Number(q('.focus-actor').dataset.poseFrame)
+ ok('入座先退去界面与底部导航，隐藏操作不可被 Tab 访问',Number(getComputedStyle(q('.focus-idle-ui')).opacity)<.01&&q('.ink-navigation').inert&&q('.focus-idle-ui').inert)
+ await sleep(1300)
+ const middle=Number(q('.focus-actor').dataset.poseFrame)
+ ok('人物使用连续的中间动作帧屈膝落座',middle>first&&middle>0&&middle<31)
+ const zoom=Number(getComputedStyle(q('.focus-camera')).transform.match(/matrix\(([^,]+)/)?.[1])
+ ok('入座过程中镜头实际推进，人物与景共享镜头',zoom>1&&zoom<1.17&&q('.focus-camera').contains(q('.focus-actor')))
+ await until(()=>q('.focus-page').dataset.phase==='active')
+ ok('连续动画不逐帧重渲染 React 页面',commits-entryCommits<30)
+ ok('入座完成为第 31 帧盘坐，小计时保留而面板退场',q('.focus-actor').dataset.poseFrame==='31'&&q('.focus-active-controls').inert&&q('.ink-navigation').getAttribute('aria-hidden')==='true'&&q('.focus-clock').textContent.startsWith('24:'))
+ q('.focus-clock-chip').focus();q('.focus-clock-chip').click();await until(()=>q('.focus-active-controls.is-visible'))
+ ok('小计时提示同时支持键盘聚焦与点击唤出操作',!q('.focus-active-controls').inert)
+ button('稍作停留').click();await until(async()=> (await db.focusState.get('current')).session.status==='paused')
+ const time=q('.focus-clock').textContent;await sleep(1100)
+ ok('暂停保留盘坐姿态，计时停止',q('.focus-clock').textContent===time&&q('.focus-actor').dataset.poseFrame==='31')
+ button('收起').click();await until(()=>!q('.focus-active-controls.is-visible'))
+ ok('暂停时也能收起操作欣赏山水',q('.focus-active-controls').inert)
+ q('.focus-scene-hit').click();await until(()=>q('.focus-active-controls.is-visible'));button('继续打坐').click()
+ await until(async()=> (await db.focusState.get('current')).session.status==='running')
+ location.hash='#/';await until(()=>q('.shelf'))
+ const returned=performance.now();location.hash='#/focus';await until(()=>q('.focus-page')?.dataset.phase==='active')
+ ok('从其他页面回到活动打坐直接接回盘坐，不重复入座',performance.now()-returned<1000&&q('.focus-actor').dataset.poseFrame==='31')
+ q('.focus-scene-hit').click();await until(()=>q('.focus-active-controls.is-visible'));button('提前收功').click();await until(()=>q('[role=dialog]'))
+ button('收功并保存').click();await until(()=>q('.focus-page').dataset.phase==='leaving')
+ await sleep(1600)
+ ok('收功有起身与镜头拉回的中间过程',Number(q('.focus-actor').dataset.poseFrame)>0&&Number(q('.focus-actor').dataset.poseFrame)<31&&q('.ink-navigation').inert)
+ await until(()=>q('.focus-page').dataset.phase==='idle')
+ await until(()=>Number(getComputedStyle(q('.focus-idle-ui')).opacity)>.995&&!q('.ink-navigation').inert)
+ ok('收功后恢复站立、浮层和导航，记录只保存一次',q('.focus-actor').dataset.poseFrame==='0'&&!q('.ink-navigation').inert&&Number(getComputedStyle(q('.focus-idle-ui')).opacity)>.995&&await db.focusSessions.count()===1)
+ if(failed)log('FAIL: '+failed+' assertions');else log('ALL DONE')
+}catch(e){log('FAIL: '+(e.stack||e))}finally{root?.unmount()}
+</script></body></html>

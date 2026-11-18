@@ -1,6 +1,6 @@
-import { useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
-import { ArrowRight, BookOpen, FolderOpen, MoreVertical, Plus, Search, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, BookOpen, FolderOpen, MoreVertical, Plus, Search, X } from 'lucide-react'
 import { isSupportedFile } from '../lib/importer'
 import { goRead } from '../hooks/useHashRoute'
 import { filterLibrary, progressPercent, readingState } from '../lib/library'
@@ -10,6 +10,8 @@ import BookDetailsDialog from './BookDetailsDialog'
 import LibraryNotes from './LibraryNotes'
 import LibrarySettings from './LibrarySettings'
 import FindBooks from './FindBooks'
+import FocusPage from './FocusPage'
+import PrivateStudy, { StudyEntry } from './PrivateStudy'
 import useBackClose from '../hooks/useBackClose'
 
 export const FORMATS = [
@@ -27,7 +29,15 @@ export default function Shelf({ books, onImport, onDelete, onOpenBackup, onBooks
   const [status, setStatus] = useState('all')
   const [collection, setCollection] = useState('')
   const [editing, setEditing] = useState(null)
+  const [focusPhase, setFocusPhase] = useState('loading')
   const inputRef = useRef(null)
+  const mainRef = useRef(null)
+  const shelfPosition = useRef(0)
+  useLayoutEffect(() => {
+    if (!mainRef.current) return
+    mainRef.current.scrollTop = page === 'shelf' ? shelfPosition.current : 0
+    if (page === 'shelf') shelfPosition.current = 0
+  }, [page])
   useBackClose(adding, () => setAdding(false), 'import')
   useBackClose(!!editing, () => setEditing(null), 'book-details')
 
@@ -41,16 +51,19 @@ export default function Shelf({ books, onImport, onDelete, onOpenBackup, onBooks
   const groups = [...new Set(books.map(b => b.collection).filter(Boolean))].sort()
   const recent = [...books].filter(b => !b.missingFile && b.progress?.started === true && readingState(b) !== 'finished')
     .sort((a, b) => (b.lastReadAt || 0) - (a.lastReadAt || 0))[0]
-  const titles = { shelf: '我的书架', discover: '寻书', notes: '读书笔记', settings: '设置' }
+  const titles = { shelf: '我的书架', discover: '寻书', focus: '打坐', notes: '读书笔记', settings: '设置' }
 
-  return <div className={`app ink-shell page-${page}`}>
+  return <div className={`app ink-shell page-${page}`} data-focus-phase={page === 'focus' ? focusPhase : undefined}>
     <div className="ink-page-backdrop" aria-hidden="true" />
-    <header className="topbar ink-topbar">
+    {page === 'study' ? <header className="study-topbar">
+      <a href="#/" className="icon-button" aria-label="返回书架"><ArrowLeft size={22} /></a>
+      <h1>我的书斋</h1>
+    </header> : <header className="topbar ink-topbar">
       <a className="desktop-wordmark" href="#/" aria-label="芸窗首页">芸窗<Seal /></a>
       <div className="page-heading"><h1>{titles[page] || titles.shelf}</h1><Seal /></div>
       <div className="header-actions">
         {page === 'shelf' && <IconButton label="搜索书架" onClick={() => setSearching(v => !v)}><Search size={23} strokeWidth={1.6} /></IconButton>}
-        <div className="add-bar">
+        {page !== 'focus' && <div className="add-bar">
           <button className="add-toggle icon-button" aria-label="添加图书" aria-expanded={adding} data-open={adding ? '1' : '0'} onClick={() => adding ? closeAdd() : setAdding(true)}>
             <Plus size={26} strokeWidth={1.5} /><span className="sr-only">＋添加图书▾</span>
           </button>
@@ -60,16 +73,19 @@ export default function Shelf({ books, onImport, onDelete, onOpenBackup, onBooks
             {FORMATS.map(f => <button className="fmt-btn" key={f.key} data-fmt={f.key} onClick={() => openPicker(f.accept)}><b>{f.label}</b><span>{f.tip}</span><ArrowRight size={15} /></button>)}
             <div className="add-hint">也可以把文件直接拖进书架</div>
           </div>}
-        </div>
+        </div>}
       </div>
-    </header>
+    </header>}
     {adding && <button className="import-dismiss" aria-label="关闭导入菜单" onClick={closeAdd} />}
     <input ref={inputRef} type="file" accept={ALL_ACCEPT} multiple hidden onChange={e => { pick(e.target.files); e.target.value = '' }} />
-    <main className="ink-main" id="main-content">
-      {page === 'settings' ? <LibrarySettings onPickFile={format => openPicker(FORMATS.find(f => f.key === format)?.accept)} onOpenBackup={onOpenBackup} /> :
+    <main ref={mainRef} className="ink-main" id="main-content">
+      {page === 'focus' ? <FocusPage books={books} onPhaseChange={setFocusPhase} /> :
+        page === 'settings' ? <LibrarySettings onPickFile={format => openPicker(FORMATS.find(f => f.key === format)?.accept)} onOpenBackup={onOpenBackup} /> :
         page === 'notes' ? <LibraryNotes books={books} /> :
         page === 'discover' ? <FindBooks /> :
+        page === 'study' ? <PrivateStudy /> :
         <div className="shelf" onDragOver={e => { e.preventDefault(); setOver(true) }} onDragLeave={() => setOver(false)} onDrop={e => { e.preventDefault(); setOver(false); pick(e.dataTransfer?.files) }}>
+          <StudyEntry onEnter={() => { shelfPosition.current = mainRef.current?.scrollTop || 0 }} />
           <AnimatePresence initial={false}>{searching && <motion.div className="library-search" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
             <Search size={19} /><input autoFocus type="search" aria-label="搜索书名、作者或分组" placeholder="寻一卷好书…" value={query} onChange={e => setQuery(e.target.value)} /><IconButton label="关闭搜索" onClick={() => { setSearching(false); setQuery('') }}><X size={17} /></IconButton>
           </motion.div>}</AnimatePresence>
@@ -95,7 +111,7 @@ export default function Shelf({ books, onImport, onDelete, onOpenBackup, onBooks
           {books.length > 0 && <p className="library-endmark"><span />书香自有来处<span /></p>}
         </div>}
     </main>
-    <AppNavigation page={page} />
+    {page !== 'study' && <AppNavigation page={page} concealed={page === 'focus' && focusPhase !== 'idle'} />}
     {editing && <BookDetailsDialog book={editing} onClose={() => setEditing(null)} onSaved={onBooksChanged} onDelete={onDelete} />}
   </div>
 }

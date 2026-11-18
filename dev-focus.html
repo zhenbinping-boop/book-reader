@@ -1,0 +1,108 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>打坐计时与恢复验收</title>
+<style>body{margin:0}#host{position:relative;width:100vw;height:100dvh;overflow:hidden}#log{position:fixed;left:100vw;top:0;width:420px;bottom:0;overflow:auto;white-space:pre-wrap;background:white;color:black;font:12px/1.7 monospace;padding:10px}</style></head><body><div id="host"></div><pre id="log"></pre><script type="module">
+import '/src/styles.css'
+// This page tests persistence flows with the user's reduced-motion preference.
+// The real-time choreography is independently exercised by dev-focus-motion.
+const actualMedia=window.matchMedia.bind(window)
+window.matchMedia=query=>{const media=actualMedia(query);if(query.includes('prefers-reduced-motion'))Object.defineProperty(media,'matches',{value:true});return media}
+let failed=0
+const log=t=>{document.querySelector('#log').textContent+=t+'\n';fetch('http://127.0.0.1:5178/log',{method:'POST',body:t}).catch(()=>{})}
+const ok=(s,c)=>{if(!c)failed++;log((c?'ok  ':'BAD ')+s)}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms))
+const until=async(fn,ms=12000)=>{const end=performance.now()+ms;while(performance.now()<end){const r=await fn();if(r)return r;await sleep(30)}throw Error('等待超时 '+fn.toString().slice(0,180))}
+const host=document.querySelector('#host')
+const textButton=text=>[...host.querySelectorAll('button')].find(x=>x.textContent.trim()===text)
+const fill=(el,value)=>{const proto=el instanceof HTMLSelectElement?HTMLSelectElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(el,value);el.dispatchEvent(new Event(el instanceof HTMLSelectElement?'change':'input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}))}
+const settings=async()=>{host.querySelector('[aria-label="专注设定"]').click();await until(()=>host.querySelector('[aria-label="自定义专注分钟"]'))}
+const reveal=async()=>{await until(()=>host.querySelector('.focus-page')?.dataset.phase==='active');host.querySelector('.focus-clock-chip').click();await until(()=>host.querySelector('.focus-active-controls.is-visible'))}
+let root
+window.addEventListener('error',e=>{failed++;log('WINDOW ERROR: '+e.message)})
+window.addEventListener('unhandledrejection',e=>{failed++;log('REJECTION: '+(e.reason?.stack||e.reason))})
+try{
+ const React=(await import('react')).default
+ const {createRoot}=await import('react-dom/client')
+ const App=(await import('/src/App.jsx')).default
+ const {db,putBook,getBook}=await import('/src/db.js')
+ const {changeFocus}=await import('/src/lib/focusStore.js')
+ const {buildBackup,restoreBackup,parseBackup}=await import('/src/lib/backup.js')
+ await db.delete();await db.open();localStorage.clear();history.replaceState(null,'','#/focus')
+ const mount=()=>{root=createRoot(host);root.render(React.createElement(App))}
+ const active=async()=> (await db.focusState.get('current'))?.session
+ mount();await until(()=>host.querySelector('.focus-start')&&!host.querySelector('.focus-start').disabled)
+ ok('打坐为真实导航页，保留原有四个入口',host.querySelectorAll('.ink-navigation a').length===5&&host.querySelector('[href="#/focus"]').getAttribute('aria-current')==='page')
+ await until(()=>[...host.querySelectorAll('.focus-scene img')].every(img=>img.complete&&img.naturalWidth>0))
+ ok('国风山林与透明人物均为本地离线资源',host.querySelectorAll('.focus-scene img').length===2&&[...host.querySelectorAll('.focus-scene img')].every(i=>new URL(i.src).origin===location.origin))
+ ok('初始 25 分钟、页面无横向溢出',host.querySelector('.focus-clock').textContent==='25:00'&&host.querySelector('.focus-page').scrollWidth<=host.querySelector('.focus-page').clientWidth)
+ ok('未打坐时为背身站立远眺，设置浮在完整山水上',host.querySelector('.focus-actor').dataset.poseFrame==='0'&&host.querySelector('.focus-landscape').getBoundingClientRect().width>=innerWidth)
+ await settings();textButton('读书打坐').click();await sleep(60);textButton('开始打坐').click();await until(()=>host.querySelector('.focus-error'))
+ ok('无书时读书模式给出提示且没有假启动',!(await active())&&host.querySelector('.focus-error').textContent.includes('添一本书'))
+ textButton('自由专注').click();await sleep(60)
+ fill(host.querySelector('[aria-label="自定义专注分钟"]'),'0');await sleep(40);textButton('开始打坐').click();await until(()=>host.querySelector('.focus-error'))
+ ok('非法时长没有创建计时记录',!(await active())&&host.querySelector('.focus-error').textContent.includes('1–180'))
+ fill(host.querySelector('[aria-label="自定义专注分钟"]'),'1');fill(host.querySelector('[aria-label="本次专注事项"]'),'只写一页字');await sleep(80)
+ textButton('开始打坐').click();await until(async()=>!!(await active()));await reveal()
+ let session=await active()
+ ok('开始时将事项与计时检查点落入 IndexedDB',session.durationMs===60000&&session.intent==='只写一页字'&&session.status==='running')
+ textButton('稍作停留').click();await until(async()=> (await active())?.status==='paused');await sleep(80)
+ const paused=await active(), pausedClock=host.querySelector('.focus-clock').textContent
+ root.unmount();await sleep(100);mount();await until(()=>textButton('继续打坐'))
+ ok('重建 App 后接回暂停状态，暂停时间不计入',(await active()).elapsedMs===paused.elapsedMs&&host.querySelector('.focus-clock').textContent===pausedClock)
+ textButton('继续打坐').click();await until(async()=> (await active())?.status==='running')
+ session=await active()
+ await db.focusState.put({...(await db.focusState.get('current')),session:{...session,elapsedMs:12000,anchorAt:Date.now()-8000}})
+ history.replaceState(null,'','#/');window.dispatchEvent(new HashChangeEvent('hashchange'))
+ await until(()=>host.querySelector('.focus-dock b')?.textContent.startsWith('00:'))
+ ok('离开打坐页后全局入口仍显示实际剩余时间',host.querySelector('.focus-dock b').textContent.startsWith('00:'))
+ root.unmount();await sleep(120);history.replaceState(null,'','#/focus');mount();await reveal()
+ session=await active()
+ ok('重开后继续基于落盘的真实时间计时',session.id===paused.id&&Number(host.querySelector('.focus-clock').textContent.split(':')[1])<=40)
+ textButton('提前收功').click();await until(()=>host.querySelector('[role=dialog]'));await sleep(60)
+ ok('收功确认使用焦点约束弹窗',host.querySelector('[role=dialog]').contains(document.activeElement))
+ const realPut=db.focusSessions.put
+ db.focusSessions.put=()=>Promise.reject(Error('模拟磁盘写入失败'))
+ textButton('收功并保存').click();await until(()=>host.querySelector('[role=dialog] .focus-error'))
+ ok('记录写入失败时事务回滚，弹窗提示重试且保留活动计时',!!(await active())&&await db.focusSessions.count()===0&&!!host.querySelector('[role=dialog]'))
+ db.focusSessions.put=realPut
+ textButton('收功并保存').click();await until(async()=>!(await active()));await until(()=>host.querySelector('.focus-result'))
+ const early=(await db.focusSessions.toArray())[0]
+ ok('提前结束只保存实际专注时间并且只记一次',early.outcome==='ended'&&early.elapsedMs>=20000&&early.elapsedMs<60000&&await db.focusSessions.count()===1)
+ await until(()=>!history.state?.__backClose)
+ textButton('歇 5 分钟').click();await until(async()=> (await active())?.phase==='rest')
+ session=await active();await changeFocus({type:'end',sessionId:session.id})
+ await until(()=>host.querySelector('.focus-page')?.dataset.phase==='idle'&&host.querySelector('.focus-result')?.textContent.includes('休息已结束'))
+ ok('休息由用户开始，休息时长没有混入专注行迹',await db.focusSessions.count()===1&&host.querySelector('.focus-result').textContent.includes('休息已结束'))
+ await changeFocus({type:'start',settings:{minutes:1,intent:'到时完成'}},Date.now()-90000)
+ session=await active()
+ await Promise.all([changeFocus({type:'tick'}),changeFocus({type:'tick'}),changeFocus({type:'end',sessionId:session?.id})])
+ await until(()=>host.querySelector('.focus-result')?.textContent.includes('这一程，已收功'))
+ const completed=(await db.focusSessions.toArray()).find(x=>x.intent==='到时完成')
+ ok('后台超时后按目标时间收功，并发恢复只保存一次',await db.focusSessions.count()===2&&completed.elapsedMs===60000&&completed.endedAt===completed.startedAt+60000)
+ const backup=await buildBackup()
+ ok('整库备份包含行迹，不迁移另一台设备的活动计时',backup.focusSessions.length===2&&!Object.hasOwn(backup,'focusState'))
+ const before=await db.focusSessions.count();await restoreBackup(backup);await restoreBackup(backup)
+ ok('多次恢复按会话 ID 去重',await db.focusSessions.count()===before)
+ const old={...backup};delete old.focusSessions;await restoreBackup(old)
+ ok('没有专注字段的旧备份仍可恢复',await db.focusSessions.count()===2)
+ let rejected=false
+ try{parseBackup(JSON.stringify({...backup,focusSessions:[{...completed,elapsedMs:-1}]}))}catch{rejected=true}
+ ok('损坏的专注备份在任何写入前拒绝',rejected&&await db.focusSessions.count()===2)
+ const saved=JSON.parse(JSON.stringify(backup));await db.focusSessions.clear();await restoreBackup(saved)
+ ok('清空历史后可从备份完整恢复',await db.focusSessions.count()===2)
+ history.replaceState(null,'','#/');window.dispatchEvent(new HashChangeEvent('hashchange'));await until(()=>host.querySelector('.focus-dock-dismiss'))
+ host.querySelector('.focus-dock-dismiss').click();await until(()=>!host.querySelector('.focus-dock'))
+ ok('收功提示可收起且不会删除已保存的行迹',await db.focusSessions.count()===2)
+ const bookId=await putBook({title:'松间书',format:'txt',pageCount:1,blob:new Blob(['第一章 松风\n山静松声远，心闲一卷书。'.repeat(80)],{type:'text/plain'}),fileHash:'sha256:focus-acceptance'})
+ history.replaceState(null,'','#/');window.dispatchEvent(new HashChangeEvent('hashchange'));await until(()=>host.querySelector('.shelf'))
+ location.hash='#/focus';await until(()=>host.querySelector('.focus-start')&&!host.querySelector('.focus-start').disabled);await settings();textButton('读书打坐').click();await until(()=>host.querySelector('[aria-label="选择打坐书籍"]'))
+ textButton('开始打坐').click();await until(async()=> (await active())?.mode==='reading');await reveal()
+ ok('读书打坐关联真实书籍',(await active()).bookId===bookId)
+ host.querySelector('.focus-open-book').click();await until(()=>host.querySelector('.txt-reader .txt-p'))
+ ok('进入真实阅读器时计时不中断，阅读返回入口可用',!!(await active())&&!!host.querySelector('.focus-dock.in-reader')&&!!(await getBook(bookId)))
+ host.querySelector('.focus-dock').click();await until(()=>textButton('提前收功'))
+ session=await active();await changeFocus({type:'end',sessionId:session.id});await until(()=>host.querySelector('.focus-start'))
+ textButton('行迹').click();await until(()=>host.querySelector('.focus-history li'))
+ ok('行迹展示本地真实记录',host.querySelectorAll('.focus-history li').length===3)
+ ok('所有模式均无页面横向溢出',host.querySelector('.focus-page').scrollWidth<=host.querySelector('.focus-page').clientWidth)
+ if(failed)log('FAIL: '+failed+' assertions');else log('ALL DONE')
+}catch(e){log('FAIL: '+(e.stack||e))}finally{root?.unmount()}
+</script></body></html>

@@ -57,7 +57,7 @@ export default function BackupPanel({ onClose, onRestored }) {
       const r = await exportBackup({ includeFiles })
       setTip(
         `已导出 ${r.filename}（${formatBytes(r.bytes)}）：${r.books} 本书、` +
-          `${r.highlights} 条高亮、${r.progress} 条进度${r.files ? `、${r.files} 个原文件` : ''}`
+          `${r.highlights} 条高亮、${r.progress} 条进度、${r.focusSessions} 程打坐、${r.readingSessions} 次阅读记录${r.files ? `、${r.files} 个原文件` : ''}`
       )
       refreshInfo()
     })
@@ -109,7 +109,7 @@ export default function BackupPanel({ onClose, onRestored }) {
 
           <div className="modal-body">
             <p className="modal-note">
-              进度、笔记、高亮都存在这台设备的浏览器里，
+              进度、笔记、高亮、打坐行迹都存在这台设备里，
               <strong>换设备、清缓存或系统回收都会丢</strong>。
               导出一份备份文件存到别处，是最可靠的保险。备份只在本机生成，不会上传。
             </p>
@@ -159,7 +159,7 @@ export default function BackupPanel({ onClose, onRestored }) {
                   disabled={!!busy}
                 />
                 <span>
-                  连 PDF 原文件一起导出
+                  连图书原文件一起导出
                   <em>（不勾选体积小；勾选后一个文件就能在别的设备完整还原，几十 MB 的书会比较慢）</em>
                 </span>
               </label>
@@ -202,6 +202,8 @@ export default function BackupPanel({ onClose, onRestored }) {
                   <span>
                     {pending.books.length} 本书 · {pending.highlights?.length ?? 0} 条高亮 ·{' '}
                     {pending.progress?.length ?? 0} 条进度
+                    {` · ${pending.focusSessions?.length ?? 0} 程打坐`}
+                    {` · ${pending.readingSessions?.length ?? 0} 次阅读记录`}
                     {pending.includeFiles ? ` · 含 ${pending.files?.length ?? 0} 个原文件` : ' · 不含原文件'}
                   </span>
                 </div>
@@ -232,6 +234,8 @@ export default function BackupPanel({ onClose, onRestored }) {
                   <li>恢复高亮：{report.highlights} 条（跳过重复 {report.skippedHighlights} 条）</li>
                   {report.updatedHighlights > 0 && <li>更新较新的笔记：{report.updatedHighlights} 条</li>}
                   <li>恢复进度：{report.progress} 条</li>
+                  <li>恢复打坐行迹：{report.focusSessions} 程</li>
+                  <li>合并阅读记录：{report.readingSessions} 次（重复记录不增加经验）</li>
                   {report.bookmarks > 0 && <li>恢复书签：{report.bookmarks} 条</li>}
                   {report.files > 0 && <li>恢复原文件：{report.files} 个</li>}
                 </ul>

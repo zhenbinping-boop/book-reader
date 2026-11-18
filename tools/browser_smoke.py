@@ -22,6 +22,14 @@ from urllib.parse import urljoin
 PORT = 5178
 ROOT = Path(__file__).resolve().parent.parent
 lines = []
+last_receipt = 0.0
+
+
+class LogServer(http.server.ThreadingHTTPServer):
+    # Assertion pages send many fetch() receipts without awaiting each one.
+    # The default single-threaded server/backlog=5 can lose the final receipt.
+    request_queue_size = 128
+    daemon_threads = True
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -35,9 +43,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        global last_receipt
         n = int(self.headers.get('content-length') or 0)
         body = self.rfile.read(n).decode('utf-8', 'replace')
         lines.append(body)
+        last_receipt = time.monotonic()
         print('  ' + body, flush=True)
         self.send_response(200)
         self._cors()
@@ -76,7 +86,9 @@ def is_failure(line):
 
 
 def run_page(chrome, target, timeout):
+    global last_receipt
     lines.clear()
+    last_receipt = time.monotonic()
     with tempfile.TemporaryDirectory(prefix='book-reader-smoke-', ignore_cleanup_errors=True) as profile:
         args = [chrome, '--headless=new', '--disable-gpu', '--no-first-run',
                 '--no-default-browser-check', '--disable-dev-shm-usage', '--incognito',
@@ -90,7 +102,10 @@ def run_page(chrome, target, timeout):
             deadline = time.monotonic() + timeout
             try:
                 while time.monotonic() < deadline and proc.poll() is None:
-                    if any('ALL DONE' in line or line.startswith('FAIL:') for line in lines):
+                    # Drain in-flight receipts before killing the browser. A
+                    # late BAD must not disappear behind an earlier ALL DONE.
+                    terminal = any('ALL DONE' in line or line.startswith('FAIL:') for line in lines)
+                    if terminal and time.monotonic() - last_receipt >= .4:
                         break
                     time.sleep(0.1)
             finally:
@@ -134,7 +149,7 @@ def main():
     if args.all:
         targets = [urljoin(args.url, page.name) for page in sorted(ROOT.glob('dev-*.html'))
                    if page.name != 'dev-android.html']  # Android 手工 CDP 调试页无完成标记
-    with http.server.HTTPServer(('127.0.0.1', PORT), Handler) as server:
+    with LogServer(('127.0.0.1', PORT), Handler) as server:
         threading.Thread(target=server.serve_forever, daemon=True).start()
         results = []
         try:

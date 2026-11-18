@@ -24,6 +24,7 @@ import usePinch, { applyPinchFx } from '../hooks/usePinch'
 import useBackClose from '../hooks/useBackClose'
 import useReaderGesture from '../hooks/useReaderGesture'
 import useProgressCheckpoint from '../hooks/useProgressCheckpoint'
+import useReadingTracker from '../hooks/useReadingTracker'
 import { readPdfPosition, pdfScrollTop } from '../lib/pdfPosition'
 import PdfPage from './PdfPage'
 import SidePanel from './SidePanel'
@@ -81,6 +82,7 @@ export default function PdfReader({ bookId, title, onBack }) {
   // ---- 划词高亮 ----
   const [highlights, setHighlights] = useState([])
   const [popover, setPopover] = useState(null)
+  useReadingTracker(bookId, phase === 'ready' && !drawer && !peek && !menu && !popover)
   const popoverRef = useRef(null)
 
   useBackClose(!!popover, () => dismissPopover(), 'popover')

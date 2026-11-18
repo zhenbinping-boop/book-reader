@@ -134,7 +134,7 @@
 
         // 点封面 → 走 hash 路由进阅读器
         host.querySelector('.cover').click()
-        assertEq('点书进阅读器：hash 变了', location.hash, `#/read/${epubId}`)
+        assertEq('点书直接进阅读器：hash 变了', location.hash, `#/read/${epubId}`)
         const reader = await until(() => host.querySelector('.epub-reader'), 10000)
         ok('EPUB 阅读器挂载', !!reader)
         assertEq('阅读器根节点带 epub-reader 标记', reader?.className.includes('epub-reader'), true)

@@ -8,6 +8,8 @@ import { useHashRoute, goShelf } from './hooks/useHashRoute'
 import useBackClose from './hooks/useBackClose'
 import { applyThemeColor } from './lib/prefs'
 import { MotionConfig } from 'motion/react'
+import FocusProvider from './components/FocusProvider'
+import FocusDock from './components/FocusDock'
 
 const PdfReader = lazy(() => import('./components/PdfReader'))
 const TxtReader = lazy(() => import('./components/TxtReader'))
@@ -178,5 +180,5 @@ function ReaderApp() {
 }
 
 export default function App() {
-  return <MotionConfig reducedMotion="user"><ReaderApp /></MotionConfig>
+  return <MotionConfig reducedMotion="user"><FocusProvider><ReaderApp /><FocusDock /></FocusProvider></MotionConfig>
 }

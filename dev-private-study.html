@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>我的书斋验收</title></head>
+<body><main id="host"></main><script type="module">
+import '/src/styles.css'
+import React from 'react'
+import { createRoot } from 'react-dom/client'
+import App from '/src/App.jsx'
+import { db } from '/src/db.js'
+import { readingDay } from '/src/lib/readingExperience.js'
+
+const host = document.querySelector('#host')
+const q = selector => host.querySelector(selector)
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+const log = msg => fetch('http://127.0.0.1:5178/log', { method: 'POST', body: msg }).catch(() => {})
+const ok = async (label, value) => {
+  if (!value) throw Error(label)
+  await log('ok  ' + label)
+}
+const until = async fn => {
+  const deadline = performance.now() + 12000
+  while (performance.now() < deadline) {
+    const result = await fn()
+    if (result) return result
+    await sleep(30)
+  }
+  throw Error('等待超时 ' + fn.toString())
+}
+const button = text => [...host.querySelectorAll('button')].find(item => item.textContent.trim() === text)
+const escape = () => window.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}))
+const mount = () => {
+  const root = createRoot(host)
+  root.render(React.createElement(App))
+  return root
+}
+
+let root
+try {
+  await db.delete()
+  await db.open()
+  localStorage.clear()
+  history.replaceState(null, '', '#/')
+  root = mount()
+  const entry = await until(() => q('.study-entry')?.textContent.includes('童生') && q('.study-entry'))
+  await ok('新用户的书架展示书斋入口与导入引导', q('.ink-navigation a[href="#/"]').getAttribute('aria-current') === 'page' && q('.welcome-reading .btn').textContent.includes('导入第一本书'))
+  entry.click()
+  await until(() => q('.private-study'))
+  await until(() => q('.study-scene-bg').naturalWidth)
+  await ok('书架一步进入真实路由和日间书斋原画', location.hash === '#/study' && q('.study-scene').dataset.light === 'day')
+  button('布置').click()
+  await until(() => q('.private-study-decor'))
+  await ok('无行迹时三件物品显示差额且不能摆放', [...host.querySelectorAll('.study-objects button')].every(b => b.disabled) && q('.study-objects').textContent.includes('还差 1 小时'))
+  escape()
+  await until(() => !q('.private-study-dialog') && !history.state?.__backClose)
+
+  const end = Date.now() - 60_000
+  const logs = Array.from({length: 18}, (_, index) => {
+    const endedAt = end - index * 3 * 3_600_000
+    return { id: 'study-' + index, phase:'focus', mode:'free', outcome:'completed', intent:'复习笔记', bookTitle:'',
+      bookHash:null, startedAt:endedAt - 10_800_000, endedAt, durationMs:10_800_000, elapsedMs:10_800_000 }
+  })
+  await db.focusSessions.bulkPut(logs.slice(0, 1))
+  await until(() => q('.study-totals').textContent.includes('3 小时'))
+  button('布置').click()
+  await until(() => q('.private-study-decor'))
+  q('[aria-label="预览案头灯"]').click()
+  await until(() => q('.study-lamp'))
+  escape()
+  await until(() => !q('.private-study-dialog') && !history.state?.__backClose)
+  await ok('可预览已获得案头灯，退出预览撤销未保存布置', !q('.study-lamp'))
+
+  await db.focusSessions.bulkPut(logs)
+  await until(() => q('.study-totals').textContent.includes('54 小时'))
+  button('布置').click()
+  await until(() => q('.private-study-decor'))
+  for (const label of ['案头灯','松窗月色','自题挂轴']) q(`[aria-label="预览${label}"]`).click()
+  const caption = await until(() => q('.study-caption-input input'))
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(caption, '读万卷书')
+  caption.dispatchEvent(new Event('input', { bubbles: true }))
+  await until(() => q('.study-scroll span').textContent === '读万卷书')
+  button('保存布置').click()
+  await until(() => !q('.private-study-dialog') && !history.state?.__backClose)
+  root.unmount()
+  root = mount()
+  await until(() => q('.study-lamp')?.naturalWidth && q('.study-scroll img')?.naturalWidth && q('.study-scene-bg')?.src.endsWith('study-moonlight.webp'))
+  await ok('三项布置及自题文字在重载应用后恢复', q('.study-scroll span').textContent === '读万卷书')
+
+  const days = {}
+  for (let i = 1; i <= 5; i++) days[readingDay(end - i * 86400000)] = 7_200_000
+  await db.readingSessions.add({version:1,id:'test-rank',startedAt:end - 6 * 86400000, updatedAt:end,
+    effectiveMs:36_000_000,days,bookTitle:'读书对照',bookHash:null})
+  await until(() => q('.study-hanging-seal')?.getAttribute('aria-label').includes('秀才'))
+  button('功名印谱').click()
+  await until(() => q('.study-seal-cell'))
+  await ok('功名印谱显示八枚生成图与历史达成日期', host.querySelectorAll('.study-seal-cell').length === 8 && !!q('.study-seal-detail time'))
+  const sealCells = [...host.querySelectorAll('.study-seal-cell')]
+  sealCells.at(-1).click()
+  await until(() => q('.study-seal-detail h3').textContent.includes('状元'))
+  await ok('未获得的印能看要求但不能展出', !button('设为展示'))
+  sealCells[0].click()
+  await until(() => button('设为展示'))
+  button('设为展示').click()
+  await until(() => q('.study-hanging-seal').getAttribute('aria-label').includes('童生'))
+  await ok('可展出已获得的旧印且实际功名仍为秀才', q('.private-study-seals .study-dialog-copy').textContent.includes('秀才'))
+  escape()
+  await until(() => !q('.private-study-dialog') && !history.state?.__backClose)
+  button('专注行迹').click()
+  await until(() => q('.study-month-label select'))
+  await ok('月度回顾从两份历史取值，展示独立累计和专注事项', !!q('.study-history-list') && q('.study-history-list').textContent.includes('复习笔记') && q('.private-study-history .study-totals').textContent.includes('有效阅读'))
+  escape()
+  await until(() => !q('.private-study-dialog') && !history.state?.__backClose)
+  q('[aria-label="返回书架"]').click()
+  await until(() => q('.study-entry'))
+  await ok('返回书架，书架仍显示真实功名', location.hash === '#/' && q('.study-entry').textContent.includes('秀才'))
+  await log('ALL DONE')
+} catch (error) {
+  await log('FAIL: ' + (error.stack || error))
+} finally {
+  root?.unmount()
+}
+</script></body></html>

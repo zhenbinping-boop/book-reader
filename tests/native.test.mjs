@@ -25,6 +25,12 @@ test('Android back returns a reader to the shelf', () => {
   handleNativeBack(args)
   assert.deepEqual(calls, ['shelf'])
 })
+
+test('Android back from the private study returns to the shelf', () => {
+  const { calls, args } = fixture({ hash: '#/study' })
+  handleNativeBack(args)
+  assert.deepEqual(calls, ['shelf'])
+})
 test('Android back at the shelf checkpoints before minimizing', () => {
   const { calls, args } = fixture()
   handleNativeBack(args)
@@ -55,8 +61,8 @@ test('Android export propagates write and share failures to UI error handling', 
     share: async () => { throw Error('cancelled') },
   }), /cancelled/)
 })
-test('Android back from notebook and settings returns to the shelf', () => {
- for(const hash of ['#/notes','#/settings','#/discover']){
+test('Android back from notebook, settings, discovery and focus returns to the shelf', () => {
+ for(const hash of ['#/notes','#/settings','#/discover','#/focus']){
   const {calls,args}=fixture({hash});handleNativeBack(args);assert.deepEqual(calls,['shelf'])
  }
 })

@@ -1,0 +1,162 @@
+.study-entry {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 100px;
+  margin: 0 0 20px;
+  padding-right: 12px;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  color: var(--ui-text);
+  background: var(--ui-surface);
+  text-decoration: none;
+}
+.study-entry:hover { border-color: var(--ui-accent); }
+.study-entry-art { width: 100%; height: 100%; object-fit: cover; }
+.study-entry-text { display: grid; gap: 4px; padding-block: 9px; }
+.study-entry-text strong { font: 500 19px var(--font-display); }
+.study-entry-text span { font: 12px/1.45 var(--font-ui); color: var(--ui-text-muted); overflow-wrap: anywhere; }
+.study-entry-text b { font: 500 12px var(--font-display); color: var(--ui-accent); }
+.study-entry > svg { color: var(--ui-text-muted); }
+.page-study .ink-main { width: 100%; max-width: 560px; margin: 0 auto; padding: 0 16px calc(24px + env(safe-area-inset-bottom)); }
+.study-topbar {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 100%;
+  max-width: 560px;
+  min-height: calc(58px + env(safe-area-inset-top));
+  margin: 0 auto;
+  padding: env(safe-area-inset-top) 56px 0;
+}
+.study-topbar h1 { margin: 0; font: 500 21px var(--font-display); text-align: center; }
+.study-topbar a { position: absolute; left: 11px; bottom: 6px; color: var(--ui-text); }
+.study-scene {
+  position: relative;
+  isolation: isolate;
+  aspect-ratio: 1122 / 1402;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: var(--ui-surface);
+}
+.study-scene-bg { display: block; width: 100%; height: 100%; object-fit: cover; }
+.study-lamp { position: absolute; z-index: 1; top: 53%; left: 13%; width: 9.7%; height: auto; }
+.study-scroll { position: absolute; top: 20%; left: 23%; width: 9.7%; }
+.study-scroll img { display: block; width: 100%; height: auto; }
+.study-scroll span {
+  position: absolute;
+  inset: 20% 21% 9%;
+  display: grid;
+  place-items: center;
+  writing-mode: vertical-rl;
+  color: #332b22;
+  font: 500 clamp(8px, 2.65vw, 14px)/1.2 var(--font-display);
+  overflow-wrap: anywhere;
+}
+.study-hanging-seal {
+  position: absolute;
+  top: 0;
+  left: 6%;
+  display: grid;
+  place-items: center;
+  width: 56px;
+  min-height: 67px;
+  padding: 13px 8px 7px;
+  border: 1px solid #bda57d;
+  border-top: 0;
+  border-radius: 0 0 7px 7px;
+  background: #f2e7cc;
+  box-shadow: 0 4px 12px #15120c35;
+}
+.study-hanging-seal img { object-fit: contain; }
+.study-decor-button { position: absolute; right: 11px; bottom: 11px; border-radius: 22px; }
+.study-totals {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin: 0;
+  padding: 16px 0;
+  text-align: center;
+}
+.study-totals > div + div { border-inline-start: 1px solid var(--ui-border); }
+.study-totals dt { font-size: 12px; color: var(--ui-text-muted); }
+.study-totals dd { margin: 5px 0 0; font: 500 16px var(--font-display); color: var(--ui-accent); }
+.study-links { display: grid; gap: 10px; }
+.study-links button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 50px;
+  padding: 12px 14px;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  font: 500 16px var(--font-display);
+  text-align: left;
+}
+.private-study-dialog { max-height: 85dvh; }
+.private-study-decor { max-height: 55dvh; }
+.private-study-dialog img { object-fit: contain; }
+.study-dialog-copy, .study-seal-detail p { font: 12px/1.7 var(--font-ui); color: var(--ui-text-muted); }
+.study-seals, .study-objects, .study-history-list { list-style: none; padding: 0; margin: 12px 0; }
+.study-seals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.study-seal-cell {
+  width: 100%;
+  min-height: 68px;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--ui-border);
+  border-radius: 7px;
+  color: var(--ui-text);
+  background: var(--ui-surface);
+  text-align: left;
+}
+.study-seal-cell[aria-pressed=true] { border-color: var(--ui-accent); background: var(--ui-accent-soft); }
+.study-seal-cell img { width: 44px; }
+.study-seal-cell strong, .study-objects strong, .study-history-list strong { font: 500 15px var(--font-display); }
+.study-seal-cell small, .study-objects small, .study-history-list small {
+  display: block;
+  margin-top: 3px;
+  font: 11px/1.4 var(--font-ui);
+  color: var(--ui-text-muted);
+}
+.study-seal-detail { border-top: 1px solid var(--ui-border); padding-top: 11px; }
+.study-seal-detail h3 { margin: 0; font: 500 16px var(--font-display); }
+.study-seal-detail p { margin: 5px 0; }
+.study-seal-detail .btn { margin-top: 7px; }
+.study-objects li, .study-history-list li {
+  display: grid;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--ui-border);
+}
+.study-objects li { grid-template-columns: 52px minmax(0, 1fr) auto; }
+.study-objects .btn { min-height: 44px; padding-inline: 10px; }
+.study-objects .btn[aria-pressed=true] { border-color: var(--ui-accent); color: var(--ui-accent); }
+.study-caption-input, .study-month-label { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
+.study-caption-input input, .study-month-label select {
+  min-height: 44px;
+  padding: 6px 9px;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  font: 16px var(--font-ui);
+}
+.study-caption-input input { flex: 1; min-width: 0; }
+.study-save { width: 100%; margin-top: 12px; }
+.study-history-list li { grid-template-columns: minmax(0, 1fr) auto; }
+.study-history-list strong { overflow-wrap: anywhere; }
+.study-history-list li > span:last-child { font-size: 12px; color: var(--ui-accent); }
+@media (max-width: 359px) {
+  .study-entry { grid-template-columns: 80px minmax(0, 1fr) auto; gap: 10px; }
+  .page-study .ink-main { padding-inline: 12px; }
+}

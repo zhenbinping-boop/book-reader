@@ -30,6 +30,7 @@ import useBackClose from '../hooks/useBackClose'
 import useReaderGesture from '../hooks/useReaderGesture'
 import useScrollChapter from '../hooks/useScrollChapter'
 import useProgressCheckpoint from '../hooks/useProgressCheckpoint'
+import useReadingTracker from '../hooks/useReadingTracker'
 import SidePanel from './SidePanel'
 import PeekWindow from './PeekWindow'
 import SelectionPopover from './SelectionPopover'
@@ -99,6 +100,7 @@ export default function TxtReader({ bookId, title, onBack }) {
     setOn: setImmersive,
   } = useImmersive()
   const keepAwake = useWakeLock(prefs.readerKeepAwake)
+  useReadingTracker(bookId, phase === 'ready' && !drawer && !peek && !appearance && !menu && !popover)
 
   useBackClose(drawer, () => setDrawer(false), 'drawer')
   useBackClose(!!peek, () => setPeek(null), 'peek')

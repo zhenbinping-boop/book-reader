@@ -1,4 +1,4 @@
-import { BookOpen, Compass, NotebookPen, Settings2, X } from 'lucide-react'
+import { BookOpen, Compass, Leaf, NotebookPen, Settings2, X } from 'lucide-react'
 import { motion, useReducedMotion } from 'motion/react'
 import useDialogFocus from '../hooks/useDialogFocus'
 
@@ -15,9 +15,9 @@ export function IconButton({ label, children, ...props }) {
   return <button type="button" className="icon-button" aria-label={label} title={label} {...props}>{children}</button>
 }
 
-export function AppNavigation({ page }) {
-  return <nav className="ink-navigation" aria-label="主导航">
-    {[['shelf', '书架', BookOpen, '#/'], ['discover', '寻书', Compass, '#/discover'], ['notes', '笔记', NotebookPen, '#/notes'], ['settings', '设置', Settings2, '#/settings']]
+export function AppNavigation({ page, concealed = false }) {
+  return <nav className="ink-navigation" aria-label="主导航" inert={concealed || undefined} aria-hidden={concealed || undefined}>
+    {[['shelf', '书架', BookOpen, '#/'], ['discover', '寻书', Compass, '#/discover'], ['focus', '打坐', Leaf, '#/focus'], ['notes', '笔记', NotebookPen, '#/notes'], ['settings', '设置', Settings2, '#/settings']]
       .map(([id, title, Icon, href]) => <a key={id} href={href} className={page === id ? 'active' : ''} aria-current={page === id ? 'page' : undefined}>
         <Icon size={22} strokeWidth={1.6} /><span>{title}</span>
       </a>)}
