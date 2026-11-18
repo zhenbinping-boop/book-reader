@@ -57,15 +57,28 @@ function shader(gl, type, source) {
  * opacity swap: both outlines move to the intermediate body shape first.
  * Canvas fallback deliberately paints one key pose, with the shorter timing.
  */
-export function createFocusMeshRenderer(canvas, fallback, image, motion, { columns = 8, rows = 4, onMode = () => {} } = {}) {
+export function createFocusMeshRenderer(canvas, fallback, image, motion, { columns = 8, rows = 4, endpoints = [], onMode = () => {} } = {}) {
   const size = motion?.size || 384, frames = motion?.frames || columns * rows
   canvas.width = fallback.width = size; canvas.height = fallback.height = size
   const flat = fallback.getContext('2d')
+  const textures = []
   let gl = null, program, texture, vertices, elements, vertexShader, fragmentShader
   let buffer, indices, position, uv, weight, sizeUniform, mode = 'canvas-keyframes', disposed = false, lastPose = 0
   const fallbackMode = () => {
     mode = 'canvas-keyframes'; canvas.hidden = true; fallback.hidden = false; onMode(mode)
   }
+  function upload(source) {
+    const target = gl.createTexture()
+    textures.push(target)
+    gl.bindTexture(gl.TEXTURE_2D, target)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source)
+    return target
+  }
+  let endpointTextures = []
   try {
     if (!motion) throw new Error('Motion data unavailable')
     gl = canvas.getContext('webgl', { alpha: true, antialias: false, premultipliedAlpha: true, depth: false, stencil: false })
@@ -77,17 +90,16 @@ export function createFocusMeshRenderer(canvas, fallback, image, motion, { colum
     gl.useProgram(program)
     position = gl.getAttribLocation(program, 'a_position'); uv = gl.getAttribLocation(program, 'a_uv')
     weight = gl.getUniformLocation(program, 'u_weight'); sizeUniform = gl.getUniformLocation(program, 'u_size')
-    vertices = gl.createBuffer(); elements = gl.createBuffer(); texture = gl.createTexture()
+    vertices = gl.createBuffer(); elements = gl.createBuffer()
     indices = focusMeshIndices(motion.side); buffer = new Float32Array(motion.side * motion.side * 4)
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, elements); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
     gl.bindBuffer(gl.ARRAY_BUFFER, vertices); gl.bufferData(gl.ARRAY_BUFFER, buffer.byteLength, gl.DYNAMIC_DRAW)
     gl.enableVertexAttribArray(position); gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 16, 0)
     gl.enableVertexAttribArray(uv); gl.vertexAttribPointer(uv, 2, gl.FLOAT, false, 16, 8)
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texture)
+    gl.activeTexture(gl.TEXTURE0)
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image)
+    texture = upload(image)
+    endpointTextures = endpoints.map(endpoint => endpoint ? upload(endpoint) : null)
     gl.uniform1i(gl.getUniformLocation(program, 'u_image'), 0); gl.uniform1f(sizeUniform, size)
     gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.clearColor(0, 0, 0, 0)
     mode = 'webgl-flow'; canvas.hidden = false; fallback.hidden = true; onMode(mode)
@@ -97,30 +109,57 @@ export function createFocusMeshRenderer(canvas, fallback, image, motion, { colum
     if (disposed) return
     const pose = clamp01(value); lastPose = pose
     const p = pose * (frames - 1), first = Math.floor(p), mix = p - first
+    const index = pose < .5 ? 0 : 1
+    const endpoint = endpoints[index]
+    const distance = index === 0 ? p : frames - 1 - p
+    const t = endpoint ? clamp01(1 - distance / 2) : 0
+    const detailed = t * t * (3 - 2 * t)
     if (mode !== 'webgl-flow') {
+      if (!flat) return
+      const side = fallback.width
       const frame = Math.round(p)
-      flat.clearRect(0, 0, size, size)
-      flat.drawImage(image, (frame % columns) * size, Math.floor(frame / columns) * size, size, size, 0, 0, size, size)
+      flat.clearRect(0, 0, side, side)
+      flat.globalCompositeOperation = 'source-over'
+      flat.globalAlpha = 1 - detailed
+      if (detailed < 1) flat.drawImage(image, (frame % columns) * size, Math.floor(frame / columns) * size, size, size, 0, 0, side, side)
+      if (detailed > 0) {
+        flat.globalCompositeOperation = 'lighter'
+        flat.globalAlpha = detailed
+        flat.drawImage(endpoint, 0, 0, side, side)
+      }
       return
     }
-    gl.viewport(0, 0, size, size); gl.clear(gl.COLOR_BUFFER_BIT)
-    const draw = (frame, direction, amount, opacity) => {
+    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight); gl.clear(gl.COLOR_BUFFER_BIT)
+    const draw = (frame, direction, amount, opacity, gridColumns = columns, gridRows = rows) => {
       if (opacity < .00001) return
-      fillFocusVertices(buffer, motion, frame, direction, amount, columns, rows)
+      fillFocusVertices(buffer, motion, frame, direction, amount, gridColumns, gridRows)
       gl.bindBuffer(gl.ARRAY_BUFFER, vertices); gl.bufferSubData(gl.ARRAY_BUFFER, 0, buffer)
       gl.uniform1f(weight, opacity); gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0)
     }
-    draw(first, 0, first === frames - 1 ? 0 : mix, 1 - mix)
-    if (mix > .00001) draw(first + 1, 1, 1 - mix, mix)
+    gl.bindTexture(gl.TEXTURE_2D, texture)
+    draw(first, 0, first === frames - 1 ? 0 : mix, (1 - mix) * (1 - detailed))
+    if (mix > .00001) draw(first + 1, 1, 1 - mix, mix * (1 - detailed))
+    if (detailed > 0) {
+      gl.bindTexture(gl.TEXTURE_2D, endpointTextures[index])
+      draw(0, 0, 0, detailed, 1, 1)
+    }
   }
   const lost = event => { event.preventDefault(); if (!disposed) { fallbackMode(); paint(lastPose) } }
   canvas.addEventListener('webglcontextlost', lost)
   return {
     get mode() { return mode }, paint,
+    resize(pixels) {
+      // Quantize the backing size so rotating/resizing the viewport doesn't
+      // continuously reallocate GPU buffers. Motion vectors stay at 384 px.
+      const side = Math.min(1152, Math.max(size, Math.ceil(pixels / 32) * 32))
+      if (canvas.width === side) return
+      canvas.width = canvas.height = fallback.width = fallback.height = side
+      paint(lastPose)
+    },
     dispose() {
       disposed = true; canvas.removeEventListener('webglcontextlost', lost)
       if (gl) {
-        if (texture) gl.deleteTexture(texture)
+        for (const target of textures) gl.deleteTexture(target)
         if (vertices) gl.deleteBuffer(vertices)
         if (elements) gl.deleteBuffer(elements)
         if (program) gl.deleteProgram(program)

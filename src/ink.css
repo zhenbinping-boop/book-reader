@@ -1,12 +1,15 @@
 /* Ink / Chinese scholar's study. Unlayered styles override the retained reader
    geometry and compatibility rules in @layer legacy without specificity wars. */
 @font-face{font-family:ReaderSong;src:url('/fonts/reader-song.woff2') format('woff2');font-display:swap;font-weight:400}
+@font-face{font-family:ReaderSongRare;src:url('/fonts/reader-song-rare-ext-a.woff2') format('woff2');font-display:swap;unicode-range:U+3400-4DBF}
+@font-face{font-family:ReaderSongRare;src:url('/fonts/reader-song-rare-unified.woff2') format('woff2');font-display:swap;unicode-range:U+4E00-9FFF,U+F900-FAFF}
+@font-face{font-family:ReaderSongRare;src:url('/fonts/reader-song-rare-supplementary.woff2') format('woff2');font-display:swap;unicode-range:U+20000-323AF}
 :root{
  --ui-bg:#f6f0e3;--ui-surface:#faf6ec;--ui-surface-2:#efe7d6;--ui-text:#282c25;--ui-text-muted:#6e685d;--ui-border:#dcd0b9;
  --ui-accent:#285b47;--ui-accent-soft:#285b4710;--ui-accent-fill:#39795b;--ui-danger:#a4372c;--ui-overlay:#262a2347;
  --font-ui:system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',ReaderSong,sans-serif;
  --ink-cinnabar:#a5382c;--ink-gold:#b39a6c;--font-display:ReaderSong,'Songti SC','STSong','Noto Serif CJK SC',serif;
- --font-reading-serif:ReaderSong,Georgia,'Songti SC','STSong','Noto Serif CJK SC',serif;--reader-font:var(--font-reading-serif);
+ --font-reading-serif:ReaderSong,ReaderSongRare,Georgia,'Songti SC','STSong','Noto Serif CJK SC',serif;--reader-font:var(--font-reading-serif);
  --reader-bg:#f8f2e6;--reader-text:#2b2b25;--reader-surface:#e9e0cd;--reader-text-muted:#766d5d;--reader-accent:#285b47;--reader-rule:#ded3be;
  --radius-md:8px;--radius-lg:10px;--shadow-1:0 2px 6px #352d1a14;--shadow-2:0 6px 24px #352d1a1a;--shadow-3:0 16px 50px #201d1733;
  accent-color:var(--ui-accent)
@@ -376,6 +379,8 @@ select{padding:8px 28px 8px 12px;max-width:100%;font-size:13px}
 .peek-content{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:12px;border:1px solid var(--reader-rule);border-radius:8px;background:var(--reader-bg);font:var(--reader-size,18px)/1.9 var(--reader-font);color:var(--reader-text);overflow-wrap:anywhere}
 .peek-content:not(.is-pdf)::after{content:'';display:block;height:35vh}
 .peek-content img{display:block;max-width:100%;height:auto;margin:12px auto}
+:is(.epub-reader .txt-p,.peek-content) img[data-epub-glyph]{display:inline-block;width:auto;height:1em;max-width:1.5em;max-height:none;vertical-align:-.12em;margin:0;border-radius:0;mix-blend-mode:multiply}
+:is([data-reader-theme=night],[data-reader-theme=oled]) img[data-epub-glyph]{filter:grayscale(1) invert(1);mix-blend-mode:screen}
 .peek-paragraph{margin:0 0 1em;white-space:pre-wrap;text-align:justify}
 .peek-message{font:14px/1.8 var(--font-display);color:var(--reader-text-muted)}
 .peek-pdf-page{position:relative;margin:auto;background:white;overflow:hidden}
@@ -400,17 +405,22 @@ select{padding:8px 28px 8px 12px;max-width:100%;font-size:13px}
 .background-choice>span[data-background=bamboo]{background-image:url('/art/reader-bamboo.webp')}
 .background-choice[aria-pressed=true]>span{outline:2px solid var(--ui-accent);outline-offset:2px}
 .background-choice small{font-size:12px}
-[data-reader-theme=paper]{--reader-image-overlay:#f8f2e622}
-[data-reader-theme=sepia]{--reader-image-overlay:#f1e5ca44}
+[data-reader-theme=paper]{--reader-image-overlay:#f8f2e670}
+[data-reader-theme=sepia]{--reader-image-overlay:#f1e5ca78}
 [data-reader-theme=night]{--reader-image-overlay:#14161ad6}
 [data-reader-theme=oled]{--reader-image-overlay:#000000e5}
-:is(.reader,.appearance-preview)[data-reader-background=mountain]{--reader-art:url('/art/reader-mountain.webp');background-image:linear-gradient(var(--reader-image-overlay),var(--reader-image-overlay)),var(--reader-art);background-size:cover;background-position:center}
-:is(.reader,.appearance-preview)[data-reader-background=bamboo]{--reader-art:url('/art/reader-bamboo.webp');background-image:linear-gradient(var(--reader-image-overlay),var(--reader-image-overlay)),var(--reader-art);background-size:cover;background-position:center}
-.reader[data-reader-background=mountain] .reader-view,.reader[data-reader-background=bamboo] .reader-view{background-image:linear-gradient(var(--reader-image-overlay),var(--reader-image-overlay)),var(--reader-art);background-size:cover;background-position:center}
-/* 将整幅图放在工具栏之间，避免山水被底栏裁掉。正文及选区仍保持透明。 */
-.reader.txt-reader[data-reader-background=mountain],.reader.txt-reader[data-reader-background=bamboo]{background-image:none}
-.reader.txt-reader[data-reader-background=mountain] .txt-stage,.reader.txt-reader[data-reader-background=bamboo] .txt-stage{background-image:linear-gradient(var(--reader-image-overlay),var(--reader-image-overlay)),var(--reader-art);background-repeat:no-repeat;background-position:center calc(var(--reader-pad) * .6 + 65px + env(safe-area-inset-top));background-size:100% calc(100% - var(--reader-pad) * 1.1 - 191px - env(safe-area-inset-top) - env(safe-area-inset-bottom))}
-.reader.txt-reader.immersive[data-reader-background=mountain] .txt-stage,.reader.txt-reader.immersive[data-reader-background=bamboo] .txt-stage{background-position:center var(--reader-pad);background-size:100% calc(100% - var(--reader-pad) * 2)}
+[data-reader-background=mountain]{--reader-art:url('/art/reader-mountain.webp')}
+[data-reader-background=bamboo]{--reader-art:url('/art/reader-bamboo.webp')}
+:is(.reader,.appearance-preview):is([data-reader-background=mountain],[data-reader-background=bamboo]){
+ background-image:linear-gradient(var(--reader-image-overlay),var(--reader-image-overlay)),var(--reader-art);
+ background-size:cover;background-position:center;background-repeat:no-repeat
+}
+.reader:is([data-reader-background=mountain],[data-reader-background=bamboo]) .reader-top{
+ border-color:transparent;background:linear-gradient(180deg,var(--reader-bg),color-mix(in srgb,var(--reader-bg) 85%,transparent) 55%,transparent)
+}
+.reader:is([data-reader-background=mountain],[data-reader-background=bamboo]) .reader-bottom{
+ background:linear-gradient(0deg,var(--reader-bg),color-mix(in srgb,var(--reader-bg) 85%,transparent) 60%,transparent)
+}
 .peek-window{left:0;right:0;margin-inline:auto;transform:none}
 .cover-choice-preview{display:flex;align-items:center;gap:16px;font:13px var(--font-display);color:var(--ui-text-muted)}
 .cover-choice-frame{position:relative;display:block;width:84px;aspect-ratio:2/3;border-radius:3px;overflow:hidden;box-shadow:2px 3px 8px #0003}

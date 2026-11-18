@@ -79,6 +79,39 @@ function hasBlockChild(el) {
   return false
 }
 
+function glyphSize(value) {
+  const size = /^(\d+(?:\.\d+)?)(px|em)?$/i.exec(value?.trim())
+  if (!size) return false
+  const amount = Number(size[1])
+  return size[2]?.toLowerCase() === 'em' ? amount >= .5 && amount <= 1.5 : amount >= 8 && amount <= 48
+}
+
+function identifyGlyph(el, alt, width, height) {
+  if (/^\p{Unified_Ideograph}[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]?$/u.test(alt?.trim() || '') ||
+      /(?:^|\s)(?:gaiji|glyph|char-image|rare-char)(?:\s|$)/i.test(el.getAttribute('class') || '')) return 'glyph'
+
+  let paragraph = el.parentElement
+  while (paragraph && !isBlock(paragraph)) paragraph = paragraph.parentElement
+  if (!paragraph?.textContent.trim() || hasBlockChild(paragraph)) return ''
+  const style = el.getAttribute('style') || ''
+  width ||= /(?:^|;)\s*width\s*:\s*([^;]+)/i.exec(style)?.[1]
+  height ||= /(?:^|;)\s*height\s*:\s*([^;]+)/i.exec(style)?.[1]
+  if (width || height) return glyphSize(width) && glyphSize(height) ? 'glyph' : ''
+  return 'probe'
+}
+
+function isSmallGlyphImage(url) {
+  return new Promise(resolve => {
+    const image = new Image()
+    image.onload = () => {
+      const { naturalWidth: w, naturalHeight: h } = image
+      resolve(w >= 12 && h >= 12 && w <= 64 && h <= 64 && w / h >= .75 && w / h <= 1.33)
+    }
+    image.onerror = () => resolve(false)
+    image.src = url
+  })
+}
+
 function normalizeWs(el) {
   // <pre> 里的空白是有意义的，别动
   if (localName(el) === 'pre' || el.querySelector?.('pre')) return
@@ -119,6 +152,7 @@ function sanitize(root, jobs) {
     const alt = isImg ? el.getAttribute('alt') : null
     const w = isImg ? el.getAttribute('width') : null
     const h = isImg ? el.getAttribute('height') : null
+    const glyph = isImg ? identifyGlyph(el, alt, w, h) : ''
 
     // 属性一律清掉（书里的 class/style 会带进出版商排版，和我们的主题打架）
     for (const a of [...el.attributes]) {
@@ -137,7 +171,7 @@ function sanitize(root, jobs) {
       if (h && /^\d+$/.test(h)) el.setAttribute('height', h)
       if (src && !/^data:/i.test(src)) {
         el.removeAttribute('src')
-        jobs.images.push({ el, href: src })
+        jobs.images.push({ el, href: src, glyph })
       }
       continue
     }
@@ -175,14 +209,28 @@ export async function buildChapter({ html, chapterPath = '', getResource } = {})
   sanitize(root, jobs)
 
   // 图片：先登记（相对路径按章路径解析），拿到 URL 再写回 src
+  const glyphProbes = new Map()
+  const pendingProbes = []
   if (jobs.images.length) {
     for (const job of jobs.images) {
       const abs = resolveZipPath(chapterPath, job.href).path
       const url = getResource ? await getResource(abs) : null
-      if (url) job.el.setAttribute('src', url)
-      else job.el.remove()
+      if (!url) {
+        job.el.remove()
+        continue
+      }
+      job.el.setAttribute('src', url)
+      if (job.glyph === 'glyph') job.el.setAttribute('data-epub-glyph', '')
+      // 搜索只传占位 URL。只探测正文或回读从 ZIP 生成的本地图片。
+      if (job.glyph === 'probe' && url.startsWith('blob:')) {
+        if (!glyphProbes.has(url)) glyphProbes.set(url, isSmallGlyphImage(url))
+        pendingProbes.push(glyphProbes.get(url).then(inline => {
+          if (inline) job.el.setAttribute('data-epub-glyph', '')
+        }))
+      }
     }
   }
+  await Promise.all(pendingProbes)
 
   const segs = []
   const ids = new Map()
@@ -209,6 +257,7 @@ export async function buildChapter({ html, chapterPath = '', getResource } = {})
     if (!outer) normalizeWs(el)
     const text = el.textContent ?? ''
     const hasImg = !!el.querySelector?.(MEDIA_SEL)
+    const hasIllustration = hasImg && !!el.querySelector('img:not([data-epub-glyph]), hr')
     if (!text && !outer && !hasImg) return
 
     // 用 HTML 的 <template> 序列化，而不是直接读 el.innerHTML：
@@ -228,7 +277,7 @@ export async function buildChapter({ html, chapterPath = '', getResource } = {})
       level,
       bullet,
       wrap,
-      img: hasImg,
+      img: hasIllustration,
       html: tpl.innerHTML,
       text,
     })

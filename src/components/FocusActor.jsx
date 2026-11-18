@@ -3,11 +3,21 @@ import { createFocusMeshRenderer, decodeFocusMotion } from '../lib/focusMesh'
 
 const root = import.meta.env.BASE_URL + 'art/focus/'
 const atlasUrl = root + 'wuxia-sit-sequence-32.webp'
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = reject
+    image.src = url
+  })
+}
+
 let resources
 function load() {
   if (!resources) resources = Promise.all([
-    new Promise((resolve, reject) => { const image = new Image(); image.onload = () => resolve(image); image.onerror = reject; image.src = atlasUrl }),
+    loadImage(atlasUrl),
     fetch(root + 'wuxia-motion-v1.bin').then(response => { if (!response.ok) throw new Error('Motion unavailable'); return response.arrayBuffer() }).then(decodeFocusMotion).catch(() => null),
+    Promise.all(['stand', 'sit'].map(pose => loadImage(root + 'wuxia-' + pose + '-hd.webp').catch(() => null))),
   ]).catch(error => { resources = null; throw error })
   return resources
 }
@@ -16,10 +26,18 @@ function FocusActor({ motion, onReady, onError }) {
   const actor = useRef(null), canvas = useRef(null), fallback = useRef(null)
   const callbacks = useRef({ onReady, onError }); callbacks.current = { onReady, onError }
   useEffect(() => {
-    let disposed = false, renderer, unsubscribe
-    load().then(([image, field]) => {
+    let disposed = false, renderer, unsubscribe, observer
+    load().then(([image, field, endpoints]) => {
       if (disposed) return
-      renderer = createFocusMeshRenderer(canvas.current, fallback.current, image, field, { onMode: mode => { if (actor.current) actor.current.dataset.renderer = mode } })
+      const element = actor.current
+      renderer = createFocusMeshRenderer(canvas.current, fallback.current, image, field, {
+        endpoints,
+        onMode: mode => { element.dataset.renderer = mode },
+      })
+      const resize = () => renderer.resize(Math.ceil(element.clientWidth * (window.devicePixelRatio || 1) * 1.17))
+      resize()
+      observer = new ResizeObserver(resize)
+      observer.observe(element)
       const draw = state => {
         renderer.paint(state.pose)
         if (actor.current) {
@@ -32,7 +50,7 @@ function FocusActor({ motion, onReady, onError }) {
       unsubscribe = motion.subscribe(draw)
       callbacks.current.onReady(2)
     }).catch(() => { if (!disposed) callbacks.current.onError() })
-    return () => { disposed = true; unsubscribe?.(); renderer?.dispose() }
+    return () => { disposed = true; observer?.disconnect(); unsubscribe?.(); renderer?.dispose() }
   }, [motion])
   return <div ref={actor} className="focus-actor" role="img" aria-label="正在铺开人物" data-pose-count="32" data-pose-frame="0" data-renderer="loading">
     <canvas ref={canvas} className="focus-character-canvas" aria-hidden="true" />

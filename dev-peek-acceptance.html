@@ -38,8 +38,15 @@ try{
  }
  for(const [name,Reader,file] of [['TXT',Txt,txt],['EPUB',Epub,()=>sample('sample.epub','application/epub+zip')]]){
   await clear();savePrefs({readerFlow:'scroll',readerBackground:'mountain',readerTheme:'sepia'});const {id}=await importFile(await file());await mount(Reader,id,'.txt-p');const view=host.querySelector('.txt-viewport');let before=Number(host.querySelector('.txt-columns').dataset.chapter)
-  const stage=host.querySelector('.txt-stage'),stageStyle=getComputedStyle(stage)
-  ok(name+' 背景在正文区域显示',stageStyle.backgroundImage.includes('reader-mountain.webp')&&stageStyle.backgroundSize.includes('calc('))
+  const reader=host.querySelector('.reader'), top=reader.querySelector('.reader-top'), bottom=reader.querySelector('.reader-bottom')
+  const background=()=>getComputedStyle(reader).backgroundImage
+  const fullArt=background()
+  ok(name+' 同一张背景铺满视口，上下栏以渐变衔接',fullArt.includes('reader-mountain.webp')&&
+    getComputedStyle(reader).backgroundSize.split(/,\s*/).every(size=>size==='cover')&&getComputedStyle(reader.querySelector('.txt-stage')).backgroundImage==='none'&&
+    [top,bottom].every(el=>getComputedStyle(el).backgroundImage.includes('linear-gradient')))
+  top.classList.add('hidden');bottom.classList.add('hidden')
+  ok(name+' 收起工具栏不切换或裁剪背景',background()===fullArt)
+  top.classList.remove('hidden');bottom.classList.remove('hidden')
   view.scrollTop=view.scrollHeight;view.dispatchEvent(new Event('scroll',{bubbles:true}));await sleep(150)
   fire(view,'touchstart',[[180,350]]);fire(view,'touchmove',[[180,220]]);fire(view,'touchend',[[180,220]])
   await until(()=>Number(host.querySelector('.txt-columns').dataset.chapter)===before+1)

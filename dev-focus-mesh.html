@@ -26,6 +26,19 @@ try {
  const pixel=fallback.getContext('2d').getImageData(32,32,1,1).data
  ok('context loss falls back to the correct drawing without losing playback',renderer.mode==='canvas-keyframes'&&pixel[3]>240&&!fallback.hidden)
  renderer.dispose()
+ const endpoint=document.createElement('canvas');endpoint.width=endpoint.height=256
+ endpoint.getContext('2d').fillRect(120,124,16,8)
+ const hd=document.createElement('canvas'),hdFlat=document.createElement('canvas')
+ const hdRenderer=createFocusMeshRenderer(hd,hdFlat,atlas,{size:64,side:3,frames:2,vectors},
+   {columns:2,rows:1,endpoints:[endpoint,null]})
+ hdRenderer.resize(256)
+ hdRenderer.paint(0)
+ const hdGL=hd.getContext('webgl'),hdPixel=new Uint8Array(4)
+ hdGL.readPixels(128,127,1,1,hdGL.RGBA,hdGL.UNSIGNED_BYTE,hdPixel)
+ ok('high-DPR buffer uses the registered high-resolution endpoint',hdGL.drawingBufferWidth===256&&hdPixel[3]>240)
+ hd.dispatchEvent(new Event('webglcontextlost',{cancelable:true}))
+ ok('Canvas fallback also preserves the high-resolution endpoint',hdFlat.width===256&&hdFlat.getContext('2d').getImageData(128,128,1,1).data[3]>240)
+ hdRenderer.dispose()
  const zeroAtlas=document.createElement('canvas');zeroAtlas.width=128;zeroAtlas.height=64
  const zeroArt=zeroAtlas.getContext('2d');zeroArt.fillStyle='red';zeroArt.fillRect(12,28,8,8);zeroArt.fillRect(64+12,28,8,8)
  const c2=document.createElement('canvas'),f2=document.createElement('canvas')

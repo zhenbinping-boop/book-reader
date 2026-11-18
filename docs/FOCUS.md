@@ -202,3 +202,9 @@ public/art/focus/wuxia-sit-sequence-32.webp
 public/art/focus/wuxia-motion-v1.bin
 0FC07C681B7CC405022AFE6A24A64FCD23CBA07ED0D822522149A30B510700AA
 ```
+
+## 高清姿态（v0.3.0-alpha.6）
+
+立姿和盘坐原画由内置 ImageGen 重绘，参考原 32 帧图集的首尾帧。提示词要求保持背身青衣、朱色发带、左侧佩剑和原有轮廓，采用工笔设色，输出双姿态透明底画稿。两张 WebP 按原首尾帧落脚点对齐到 1024 × 1024 透明画幅，位于 `public/art/focus/wuxia-stand-hd.webp` 和 `public/art/focus/wuxia-sit-hd.webp`。
+
+入座和收功仍由原 32 帧运动网格驱动，首尾各两帧衔接高清图。画布按显示宽度、设备像素比和镜头推进计算背板，单边最多 1152px。WebGL 不可用时 Canvas 仍可显示高清首尾姿态。

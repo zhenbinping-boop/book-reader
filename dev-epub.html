@@ -193,6 +193,37 @@
         ok('clean 后正文还读得下去', c3.text.includes('脚本被清掉之后'))
         assertEq('段落计数（丢图那一整段也不留）', c3.segs.length, 5)
 
+        const imageUrl = async size => {
+          const canvas = document.createElement('canvas')
+          canvas.width = canvas.height = size
+          canvas.getContext('2d').fillRect(0, 0, size, size)
+          return URL.createObjectURL(await new Promise(resolve => canvas.toBlob(resolve)))
+        }
+        const glyphUrl = await imageUrl(34), illustrationUrl = await imageUrl(120)
+        const glyphSource = '<html><body><p>朱寘<img src="g.png"/>还有<span><img class="gaiji" src="g.png" alt="鐇"/></span>文字。</p><p id="next">图示<img src="art.png"/>。</p><p><img src="g.png"/></p></body></html>'
+        try {
+          const glyphChapter = await D.buildChapter({
+            html: glyphSource, getResource: async path => path === 'g.png' ? glyphUrl : illustrationUrl,
+          })
+          const indexChapter = await D.buildChapter({ html: glyphSource, getResource: async () => 'data:,' })
+          const glyphLayout = document.createElement('div')
+          glyphLayout.dataset.readerTheme = 'sepia'
+          glyphLayout.innerHTML = `<section class="epub-reader"><p class="txt-p">${glyphChapter.segs[0].html}</p></section><div class="peek-content">${glyphChapter.segs[0].html}${glyphChapter.segs[1].html}</div>`
+          document.querySelector('#host').append(glyphLayout)
+          assertEq('小字图和明确标记的字图都识别为内联', glyphLayout.querySelectorAll('img[data-epub-glyph]').length, 4)
+          ok('正文和回读窗随字行排版，独立小图和普通插画仍按图处理',
+            [...glyphLayout.querySelectorAll('img[data-epub-glyph]')].every(img => getComputedStyle(img).display === 'inline-block') &&
+            getComputedStyle(glyphLayout.querySelector('.peek-content img:not([data-epub-glyph])')).display === 'block' &&
+            !glyphChapter.segs[0].img && glyphChapter.segs[1].img && glyphChapter.segs[2].img)
+          ok('标注字符、章节锚点和搜索文本保持一致',
+            glyphChapter.text === indexChapter.text && glyphChapter.segs[1].start === indexChapter.segs[1].start &&
+            glyphChapter.ids.get('next') === 1 && glyphChapter.segs[0].text === '朱寘还有文字。')
+          glyphLayout.remove()
+        } finally {
+          URL.revokeObjectURL(glyphUrl)
+          URL.revokeObjectURL(illustrationUrl)
+        }
+
         /* ---------- 4. 高亮回填 ---------- */
         const seg = c1.segs[1]
         const marked = D.markedHtml(seg.html, seg.start, [{ id: 7, color: 'green', from: seg.start + 3, to: seg.start + 9 }])
