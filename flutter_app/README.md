@@ -25,4 +25,4 @@ flutter run
 
 ## GitHub 测试包
 
-`codex/flutter-android-preview` 分支的 Flutter Android preview 工作流构建独立安装的调试 APK。构建成功后，从运行详情的 Artifacts 下载 `yunchuang-flutter-preview-android`，解压后安装 APK。产物附带 SHA-256 校验值。
+`main` 和 `codex/flutter-android-preview` 分支的 Flutter Android preview 工作流构建独立安装的调试 APK。构建成功后，从运行详情的 Artifacts 下载 `yunchuang-flutter-preview-android`，解压后安装 APK。产物附带 SHA-256 校验值。

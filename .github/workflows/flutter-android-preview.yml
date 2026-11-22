@@ -2,7 +2,7 @@ name: Flutter Android preview
 
 on:
   push:
-    branches: [codex/flutter-android-preview]
+    branches: [main, codex/flutter-android-preview]
     paths:
       - flutter_app/**
       - samples/sample-utf8.txt
