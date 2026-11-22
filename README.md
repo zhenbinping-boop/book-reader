@@ -89,6 +89,8 @@
 
 ## 本地运行
 
+Flutter 手机端原型位于 `flutter_app/`。查看[实现计划](docs/FLUTTER_IMPLEMENTATION_PLAN.md)和[原型运行与验收说明](flutter_app/README.md)。
+
 需要 **Node.js 22.13.0 或更新版本**。运行应用不需要 Python；浏览器回归工具需要 Python 3。
 
 ```bash
