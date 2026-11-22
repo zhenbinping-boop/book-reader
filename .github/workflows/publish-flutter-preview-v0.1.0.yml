@@ -1,0 +1,77 @@
+name: Publish Flutter preview v0.1.0
+
+on:
+  push:
+    branches: [codex/publish-flutter-preview-v0.1.0]
+    paths:
+      - .github/workflows/publish-flutter-preview-v0.1.0.yml
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-flutter-preview-v0.1.0
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SOURCE_SHA: '0fe320cd41e96799c1e8530a8aa5387f40845f1d'
+      ARTIFACT_ID: '14744992254'
+      ARCHIVE_SHA256: 'd9779cf9a8f274962fbf34b897e60fcc78f7205f385f2dbc0234bc0d9e5f1153'
+      TAG: flutter-preview-v0.1.0
+    steps:
+      - name: Download and verify the main branch APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/flutter-release"
+          mkdir -p "$work/files"
+          IFS=$'\t' read -r source expired digest < <(
+            gh api "repos/$GH_REPO/actions/artifacts/$ARTIFACT_ID" \
+              --jq '[.workflow_run.head_sha, .expired, .digest] | @tsv'
+          )
+          test "$source" = "$SOURCE_SHA"
+          test "$expired" = false
+          test "$digest" = "sha256:$ARCHIVE_SHA256"
+          gh api "repos/$GH_REPO/actions/artifacts/$ARTIFACT_ID/zip" > "$work/artifact.zip"
+          printf '%s  %s\n' "$ARCHIVE_SHA256" "$work/artifact.zip" | sha256sum --check -
+          unzip -q "$work/artifact.zip" -d "$work/files"
+          cd "$work/files"
+          sha256sum --check SHA256SUMS.txt
+          test -s yunchuang-flutter-preview.apk
+      - name: Publish the Android preview on GitHub Releases
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/flutter-release"
+          apk="$work/files/yunchuang-flutter-preview.apk"
+          sums="$work/files/SHA256SUMS.txt"
+          cat > "$work/notes.md" <<'NOTES'
+          芸窗 Flutter 安卓原型，用于验证旧备份读取和 TXT 续读。支持 Android 10 及更新版本，可与现有芸窗并存。
+
+          - 打开旧版导出的 JSON 备份，预览书架，按旧位置打开 UTF-8／UTF-16 TXT。请导出时勾选「包含原文件」。
+          - 预览在内存中运行。每次启动后可重新选择备份。PDF／EPUB 阅读和长期保存书库属于后续开发。
+          - 下载 `yunchuang-flutter-preview.apk` 安装。此包使用调试签名，随附 `SHA256SUMS.txt`。
+          NOTES
+          if release="$(gh release view "$TAG" --json isDraft,targetCommitish --jq '[.isDraft, .targetCommitish] | @tsv' 2>/dev/null)"; then
+            IFS=$'\t' read -r draft target <<< "$release"
+            test "$target" = "$SOURCE_SHA"
+            if [[ "$draft" == false ]]; then
+              gh release download "$TAG" --pattern yunchuang-flutter-preview.apk --pattern SHA256SUMS.txt --dir "$work/published"
+              cmp "$apk" "$work/published/yunchuang-flutter-preview.apk"
+              cmp "$sums" "$work/published/SHA256SUMS.txt"
+              exit 0
+            fi
+          else
+            gh release create "$TAG" --target "$SOURCE_SHA" --draft --prerelease --latest=false \
+              --title '芸窗 Flutter 安卓原型 v0.1.0' --notes-file "$work/notes.md"
+          fi
+          gh release upload "$TAG" "$apk" "$sums" --clobber
+          gh release edit "$TAG" --draft=false --latest=false
+          gh release view "$TAG" --json url --jq .url
