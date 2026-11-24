@@ -11,7 +11,9 @@ class LegacyBook {
     required this.format,
     required this.chapterIndex,
     required this.charOffset,
+    required this.pdfPage,
     required this.lastReadAt,
+    required this.fileHash,
     required this._fileData,
   });
 
@@ -21,7 +23,9 @@ class LegacyBook {
   final BookFormat format;
   final int chapterIndex;
   final int charOffset;
+  final int pdfPage;
   final int lastReadAt;
+  final String? fileHash;
   final String? _fileData;
 
   bool get hasOriginal => _fileData != null;
@@ -40,9 +44,11 @@ class LegacyBook {
 }
 
 class LegacyBackup {
-  LegacyBackup._(List<LegacyBook> books) : books = List.unmodifiable(books);
+  LegacyBackup._(List<LegacyBook> books, this.metadata)
+    : books = List.unmodifiable(books);
 
   final List<LegacyBook> books;
+  final String metadata;
 
   LegacyBook? get recentReadableBook {
     LegacyBook? recent;
@@ -79,6 +85,7 @@ class LegacyBackup {
     if (fileRows.keys.any((id) => !bookRows.containsKey(id))) {
       throw const FormatException('备份里有原文件找不到对应的书籍。');
     }
+    final metadata = Map<String, dynamic>.of(decoded)..remove('files');
     return LegacyBackup._([
       for (final entry in bookRows.entries)
         _readBook(
@@ -87,7 +94,7 @@ class LegacyBackup {
           progressRows[entry.key],
           fileRows[entry.key],
         ),
-    ]);
+    ], jsonEncode(metadata));
   }
 
   static LegacyBook _readBook(
@@ -117,7 +124,9 @@ class LegacyBackup {
       format: format,
       chapterIndex: _nonNegative(progress?['chapterIndex']),
       charOffset: _nonNegative(progress?['charOffset']),
+      pdfPage: (_integer(progress?['page']) ?? 1).clamp(1, 2147483647),
       lastReadAt: _nonNegative(row['lastReadAt']),
+      fileHash: row['fileHash'] is String ? row['fileHash'] as String : null,
       fileData: fileData as String?,
     );
   }

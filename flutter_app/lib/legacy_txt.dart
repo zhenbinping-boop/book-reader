@@ -19,11 +19,30 @@ class TextDocument {
   final String text;
   final List<TextChapter> chapters;
 
-  static TextDocument fromBook(LegacyBook book) {
-    final text = _decodeText(book.readOriginal())
-        .replaceAll(RegExp(r'\r\n?'), '\n');
+  static TextDocument fromBook(LegacyBook book) =>
+      fromBytes(book.readOriginal());
+
+  static TextDocument fromBytes(Uint8List input) {
+    final text = _decodeText(input).replaceAll(RegExp(r'\r\n?'), '\n');
     if (text.trim().isEmpty) throw const FormatException('这本书没有可以显示的正文。');
     return TextDocument._(text, _splitChapters(text));
+  }
+
+  factory TextDocument.fromChapters(
+    Iterable<({String title, String text})> source,
+  ) {
+    final text = StringBuffer();
+    final chapters = <TextChapter>[];
+    for (final chapter in source) {
+      final start = text.length;
+      text.write(chapter.text);
+      chapters.add(TextChapter(chapter.title, start, text.length));
+    }
+    final result = text.toString();
+    if (chapters.isEmpty || result.trim().isEmpty) {
+      throw const FormatException('这个 EPUB 里找不到可显示的正文。');
+    }
+    return TextDocument._(result, chapters);
   }
 }
 
